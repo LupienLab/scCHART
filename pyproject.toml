@@ -1,0 +1,70 @@
+[project]
+name = "scchart"
+version = "0.1.0"
+description = "scCHART (single-cell Chromatin Heterogeneity Assessment and Ranking Tool) is an information-theoretic framework for quantifying structural and regulatory programme heterogeneity from single-cell chromatin accessibility data."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Arvind Iyer", email = "ayalurarvind@gmail.com" },
+]
+requires-python = ">=3.10"
+keywords = [
+    "single-cell",
+    "scATAC-seq",
+    "chromatin accessibility",
+    "heterogeneity",
+    "information theory",
+    "Jensen-Shannon divergence",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.25,<2.4",
+    "scipy>=1.10",
+    "pandas>=2.1",
+    "anndata>=0.9",
+    "numba>=0.58",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+
+[project.urls]
+Homepage = "https://github.com/LupienLab/scCHART"
+Repository = "https://github.com/LupienLab/scCHART"
+Issues = "https://github.com/LupienLab/scCHART/issues"
+Changelog = "https://github.com/LupienLab/scCHART/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+test = ["pytest>=8", "matplotlib>=3.7"]
+tutorial = ["matplotlib>=3.7", "jupyter>=1.0", "nbconvert>=7", "ipykernel>=6"]
+dev = [
+    { include-group = "test" },
+    { include-group = "tutorial" },
+]
+
+[tool.uv]
+default-groups = ["test"]
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+source-include = ["tests/**", "CHANGELOG.md"]
+source-exclude = ["**/__pycache__/**", "**/.DS_Store", "tests/data/**/*.h5ad"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

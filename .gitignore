@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Testing and tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Environments and local configuration
+.venv/
+venv/
+.env
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data: never commit datasets (the tutorial downloads its input)
+*.h5ad
+*.h5
+*.tsv.gz
+*.loom
+*.zarr/
+examples/pbmc_tutorial/data/
+
+# OS
+.DS_Store
