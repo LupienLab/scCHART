@@ -25,6 +25,7 @@ from scchart.programme_entropy import (
     depth_standardized_programme_comparison,
     external_programme_reference,
     programme_divergence,
+    background_depth,
     programme_evidence,
     programme_membership,
     programme_mixing,
@@ -161,6 +162,25 @@ def test_programme_evidence_explicit():
     np.testing.assert_allclose(r[1], [1 / 3] * 3)
     P = programme_mixing(r)
     assert P[0] == pytest.approx(0.0) and P[1] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("counts", [False, True])
+def test_background_depth_and_evidence_match_v010(counts):
+    X, g = _synthetic_programme_data(seed=23)
+    if counts:
+        X = (X * 3).astype(np.float32)
+    for ref in crossfit_programme_references(X, g, n_folds=3, rule=RULE) + [
+            external_programme_reference(EXTERNAL, X, g)]:
+        B = binarize(X)
+        D_v010 = np.asarray(B[:, ref.background_mask].sum(axis=1)).ravel()
+        M = ref.membership_matrix()
+        O = (B @ M).toarray()
+        a_v010 = np.maximum(0.0, (O - D_v010[:, None] * np.asarray(M.T @ ref.beta_tilde).ravel()[None, :])
+                            / np.asarray(M.sum(axis=0)).ravel())
+        assert background_depth(X, ref).tobytes() == D_v010.tobytes()
+        assert programme_evidence(X, ref).tobytes() == a_v010.tobytes()
+        s = score_programmes(X, ref)
+        assert s.D.tobytes() == D_v010.tobytes() and s.evidence.tobytes() == a_v010.tobytes()
 
 
 def test_evidence_clips_the_programme_mean_not_each_peak():

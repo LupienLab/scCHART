@@ -578,6 +578,18 @@ def crossfit_programme_references(X, labels, feature_names=None, *, n_folds: int
 # Layer B: background-corrected evidence and membership
 # =============================================================================
 
+def _background_depth_binary(B: sparse.csr_matrix, background_mask: np.ndarray) -> np.ndarray:
+    """``D_i`` of a binary matrix without copying its background columns.
+
+    ``D_i`` = open features - open programme features. Both are counts of
+    1.0 entries, exact in float64, so the result equals
+    ``B[:, background_mask].sum(axis=1)`` exactly.
+    """
+    total = np.asarray(B.sum(axis=1)).ravel()
+    in_programmes = np.asarray(B @ (~background_mask).astype(np.float64)).ravel()
+    return total - in_programmes
+
+
 def background_depth(B, reference: ProgrammeReference) -> np.ndarray:
     """Compute the background depth ``D_i`` of each cell.
 
@@ -596,7 +608,7 @@ def background_depth(B, reference: ProgrammeReference) -> np.ndarray:
     numpy.ndarray
         Background depth of each cell.
     """
-    return np.asarray(_as_binary(B)[:, reference.background_mask].sum(axis=1)).ravel()
+    return _background_depth_binary(_as_binary(B), reference.background_mask)
 
 
 def _evidence_from_blocks(O: np.ndarray, D: np.ndarray, M: sparse.csr_matrix, beta_tilde: np.ndarray) -> np.ndarray:
@@ -642,7 +654,7 @@ def programme_evidence(B, reference: ProgrammeReference) -> np.ndarray:
     M = reference.membership_matrix()
     O = B @ M
     O = O.toarray() if sparse.issparse(O) else np.asarray(O)
-    D = np.asarray(B[:, reference.background_mask].sum(axis=1)).ravel()
+    D = _background_depth_binary(B, reference.background_mask)
     return _evidence_from_blocks(O, D, M, reference.beta_tilde)
 
 
@@ -937,15 +949,16 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     bg_cols = np.flatnonzero(bgm)
     M = reference.membership_matrix()[prog_cols]
     Bp = Bb[:, prog_cols]
-    Bg = Bb[:, bg_cols]
-    D0 = np.asarray(Bg.sum(axis=1)).ravel()
+    # D_i = open features - open programme features (exact counts); the background
+    # block itself is only built when it is randomized.
+    D0 = np.asarray(Bb.sum(axis=1)).ravel() - np.asarray(Bp.sum(axis=1)).ravel()
     beta_p = reference.beta_tilde[prog_cols]
     rs, diags = [], []
     programme_chains = swap_replicates(Bp, [seed + 2 * b for b in range(n_replicates)], sampler=sampler,
                                        n_mult=n_mult, n_jobs=n_jobs)
     if randomise_background:
-        background_chains = swap_replicates(Bg, [seed + 2 * b + 1 for b in range(n_replicates)], sampler=sampler,
-                                            n_mult=n_mult, n_jobs=n_jobs)
+        background_chains = swap_replicates(Bb[:, bg_cols], [seed + 2 * b + 1 for b in range(n_replicates)],
+                                            sampler=sampler, n_mult=n_mult, n_jobs=n_jobs)
     for b in range(n_replicates):
         Np, dp = next(programme_chains)
         diags.append(("programme", dp))
