@@ -265,7 +265,7 @@ def _group_detection_rates(B, labels, groups):
     labels = np.asarray(labels).astype(str)
     # Already binary: count from B itself, without copying it. Counts below 2**24 are exact
     # in float32 and float64 alike, so the rates equal those of the float32 copy below.
-    binary = (isinstance(B, sparse.csr_matrix) and B.dtype == np.float64 and bool(np.all(B.data == 1.0))
+    binary = (type(B) is sparse.csr_matrix and B.dtype == np.float64 and bool(np.all(B.data == 1.0))
               and B.shape[0] < 2 ** 24)
     if binary:
         X = B

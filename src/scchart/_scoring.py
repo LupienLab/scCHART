@@ -249,11 +249,12 @@ def binarize(X) -> sparse.csr_matrix:
 def _as_binary(X) -> sparse.csr_matrix:
     """Return ``binarize(X)``, or ``X`` itself when it is already that matrix.
 
-    ``X`` is returned unchanged (not copied) when it is a float64
-    ``csr_matrix`` whose stored values are all 1.0, which ``binarize`` would
-    reproduce exactly. For internal use where the result is only read.
+    ``X`` is returned unchanged (not copied) when it is exactly a float64
+    ``csr_matrix`` (not a subclass such as SciPy 1.10's ``csr_array``) whose
+    stored values are all 1.0, which ``binarize`` would reproduce exactly.
+    For internal use where the result is only read.
     """
-    if isinstance(X, sparse.csr_matrix) and X.dtype == np.float64 and bool(np.all(X.data == 1.0)):
+    if type(X) is sparse.csr_matrix and X.dtype == np.float64 and bool(np.all(X.data == 1.0)):
         return X
     return binarize(X)
 

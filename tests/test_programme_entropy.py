@@ -206,8 +206,9 @@ def test_group_detection_rates_and_programmes_match_v010(kind):
     X, g = _synthetic_programme_data(seed=25)
     B = binarize(X) if kind == "binary" else (X * 3).tocsr()
     groups = ["g0", "g2", "g1"]
-    for got, want in zip(_group_detection_rates(B, g, groups), _group_detection_rates_v010(B, g, groups)):
-        assert got.dtype == want.dtype and got.tobytes() == want.tobytes()
+    for M in (B, sparse.csr_array(B)):
+        for got, want in zip(_group_detection_rates(M, g, groups), _group_detection_rates_v010(M, g, groups)):
+            assert got.dtype == want.dtype and got.tobytes() == want.tobytes()
 
 
 def test_programme_evidence_explicit():
