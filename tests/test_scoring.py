@@ -11,6 +11,7 @@ from scipy import sparse
 
 from scchart._scoring import (
     UpsamplingWarning,
+    _as_binary,
     as_binary_dense,
     binarize,
     binomial_downsample,
@@ -75,6 +76,49 @@ def test_binarize():
 
 
 # ----------------------------------------------------------------------------- fixed-margin null
+def _binarize_v010(X):
+    """The v0.1.0 implementation, kept as the reference."""
+    B = sparse.csr_matrix(X, dtype=np.float64, copy=True)
+    B.data = (B.data > 0).astype(np.float64)
+    B.eliminate_zeros()
+    return B
+
+
+def _same_csr(a, b):
+    return (type(a) is type(b) and a.shape == b.shape and a.dtype == b.dtype
+            and all(x.dtype == y.dtype and x.tobytes() == y.tobytes()
+                    for x, y in ((a.data, b.data), (a.indices, b.indices), (a.indptr, b.indptr))))
+
+
+@pytest.mark.parametrize("fmt", ["csr", "csc", "coo", "dense"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, np.uint32, np.int64])
+def test_binarize_and_as_binary_match_v010(fmt, dtype):
+    rng = np.random.default_rng(4)
+    X = (rng.integers(-2 if np.issubdtype(dtype, np.signedinteger) or dtype in (np.float64, np.float32) else 0, 4,
+                      (30, 50)) * (rng.random((30, 50)) < 0.3)).astype(dtype)
+    M = X if fmt == "dense" else getattr(sparse, f"{fmt}_matrix")(X)
+    if fmt == "csr":
+        M.data[:3] = 0  # explicit zeros
+    before = M.copy()
+    want = _binarize_v010(M)
+    assert _same_csr(binarize(M), want)
+    assert _same_csr(_as_binary(M), want)
+    assert _same_csr(_as_binary(want), want) and _as_binary(want) is want  # already binary: not copied
+    if fmt == "dense":
+        np.testing.assert_array_equal(M, before)
+    else:
+        assert (M != before).nnz == 0  # input not modified
+
+
+def test_binarize_nan_and_duplicates_match_v010():
+    csr = sparse.csr_matrix((np.array([np.nan, 2.0, -1.0, 1.0, 1.0]), np.array([0, 1, 2, 0, 0]),
+                             np.array([0, 3, 5])), shape=(2, 3))
+    assert _same_csr(binarize(csr), _binarize_v010(csr))
+    assert _same_csr(_as_binary(csr), _binarize_v010(csr))
+    assert _as_binary(sparse.csr_array(np.eye(3))) is not None  # csr_array input is converted, not returned
+    assert type(_as_binary(sparse.csr_array(np.eye(3)))) is sparse.csr_matrix
+
+
 def _as_binary_dense_v010(B):
     """The v0.1.0 implementation (dense float copy of the input), kept as the reference."""
     D = (B.toarray() > 0) if sparse.issparse(B) else (np.asarray(B) > 0)

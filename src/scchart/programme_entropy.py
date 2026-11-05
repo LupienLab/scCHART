@@ -88,6 +88,7 @@ from scipy import sparse
 
 from ._scoring import (
     N_NULL_REPLICATES,
+    _as_binary,
     DEFAULT_SAMPLER,
     DepthStandardizedResult,
     binarize,
@@ -466,7 +467,7 @@ def external_programme_reference(programme_of_feature, B_ref=None, ref_groups=No
     if beta_tilde is None:
         if B_ref is None or ref_groups is None:
             raise ValueError("supply beta_tilde, or B_ref and ref_groups to estimate it")
-        beta_tilde = reference_background_rates(binarize(B_ref), ref_groups, lab, progs,
+        beta_tilde = reference_background_rates(_as_binary(B_ref), ref_groups, lab, progs,
                                                 programme_groups=programme_groups)
     return ProgrammeReference(lab, progs, beta_tilde, source="external",
                               train_index=None if train_index is None else np.asarray(train_index),
@@ -535,7 +536,7 @@ def crossfit_programme_references(X, labels, feature_names=None, *, n_folds: int
 
     if harmonise not in ("intersection", "error"):
         raise ValueError("harmonise must be 'intersection' or 'error'")
-    B = binarize(X)
+    B = _as_binary(X)
     lab = check_labels(labels, B.shape[0], name="labels")
     params = dict(PROVISIONAL_RULE, **(rule or {}))
     folds = list(StratifiedKFold(n_folds, shuffle=True, random_state=random_state).split(np.zeros(lab.size), lab))
@@ -595,7 +596,7 @@ def background_depth(B, reference: ProgrammeReference) -> np.ndarray:
     numpy.ndarray
         Background depth of each cell.
     """
-    return np.asarray(binarize(B)[:, reference.background_mask].sum(axis=1)).ravel()
+    return np.asarray(_as_binary(B)[:, reference.background_mask].sum(axis=1)).ravel()
 
 
 def _evidence_from_blocks(O: np.ndarray, D: np.ndarray, M: sparse.csr_matrix, beta_tilde: np.ndarray) -> np.ndarray:
@@ -635,7 +636,7 @@ def programme_evidence(B, reference: ProgrammeReference) -> np.ndarray:
     ValueError
         If ``B`` and the reference have different feature universes.
     """
-    B = binarize(B)
+    B = _as_binary(B)
     if B.shape[1] != reference.programme_of_feature.size:
         raise ValueError("B and the reference have different feature universes")
     M = reference.membership_matrix()
@@ -822,7 +823,7 @@ def score_programmes(B, reference: ProgrammeReference) -> ProgrammeScores:
     ProgrammeScores
         Evidence, composition, ``P_i``, scored mask and background depth.
     """
-    Bb = binarize(B)
+    Bb = _as_binary(B)
     a = programme_evidence(Bb, reference)
     r = programme_membership(a)
     return ProgrammeScores(list(reference.programmes), a, r, programme_mixing(r),
@@ -851,7 +852,7 @@ def score_crossfit(X, references: Sequence[ProgrammeReference]) -> ProgrammeScor
         lacks ``score_index``, or a cell is scored by no fold or by more
         than one fold.
     """
-    B = binarize(X)
+    B = _as_binary(X)
     K = references[0].K
     progs = references[0].programmes
     if any(ref.programmes != progs for ref in references):
@@ -930,7 +931,7 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     background chains run on the dense background block, which needs about
     ``n_jobs * n_cells * n_background_features`` bytes.
     """
-    Bb = binarize(B)
+    Bb = _as_binary(B)
     bgm = reference.background_mask
     prog_cols = np.flatnonzero(~bgm)
     bg_cols = np.flatnonzero(bgm)
@@ -1079,7 +1080,7 @@ def programme_null_calibration(parts: Sequence[tuple], *, n_replicates: int = N_
         s = score_programmes(B_part, ref)
         r_obs.append(s.r)
         n_total += s.r.shape[0]
-        Bn = binarize(B_part)
+        Bn = _as_binary(B_part)
         if null_cells == "scored":
             Bn = Bn[np.flatnonzero(s.scored)]
         if Bn.shape[0] == 0:
@@ -1155,7 +1156,7 @@ def crossfit_population_calibration(X, labels, references: Sequence[ProgrammeRef
     calibrations : dict
         :class:`ProgrammeCalibration` of each population.
     """
-    B = binarize(X)
+    B = _as_binary(X)
     lab = check_labels(labels, B.shape[0], name="labels")
     pops = list(populations) if populations is not None else sorted(set(lab))
     rows, objs = [], {}
@@ -1259,7 +1260,7 @@ def depth_standardized_programme_comparison(
         for ref in references:
             te = _score_index(ref, X.shape[0])
             q_cell = np.array([q_pop.get(G, 1.0) for G in lab[te]])
-            Bte = binarize(binomial_downsample(X[te], q_cell, rng))
+            Bte = _as_binary(binomial_downsample(X[te], q_cell, rng))
             for gi, G in enumerate(pops):
                 loc = np.flatnonzero(lab[te] == G)
                 if loc.size:

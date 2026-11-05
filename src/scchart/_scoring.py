@@ -239,9 +239,21 @@ def binarize(X) -> sparse.csr_matrix:
     than modified; no filtering or normalization is performed.
     """
     B = sparse.csr_matrix(X, dtype=np.float64, copy=True)
-    B.data = (B.data > 0).astype(np.float64)
+    np.greater(B.data, 0, out=B.data, casting="unsafe")  # 1.0 where X > 0, else 0.0, in place
     B.eliminate_zeros()
     return B
+
+
+def _as_binary(X) -> sparse.csr_matrix:
+    """Return ``binarize(X)``, or ``X`` itself when it is already that matrix.
+
+    ``X`` is returned unchanged (not copied) when it is a float64
+    ``csr_matrix`` whose stored values are all 1.0, which ``binarize`` would
+    reproduce exactly. For internal use where the result is only read.
+    """
+    if isinstance(X, sparse.csr_matrix) and X.dtype == np.float64 and bool(np.all(X.data == 1.0)):
+        return X
+    return binarize(X)
 
 
 def check_labels(labels, n_cells: int, *, name: str = "groups") -> np.ndarray:
