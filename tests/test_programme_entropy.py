@@ -82,6 +82,59 @@ def test_reference_validates_inputs():
     assert ref.sizes().tolist() == [2, 2, 2]
 
 
+def _derived_v010(lab, programmes):
+    """v0.1.0 computation of the derived reference arrays (no cache), kept as the reference."""
+    lab = np.asarray(lab).astype(str).astype(object)
+    k_of = np.full(lab.size, -1)
+    for k, p in enumerate(programmes):
+        k_of[lab == p] = k
+    rows = np.flatnonzero(k_of >= 0)
+    M = sparse.csr_matrix((np.ones(rows.size), (rows, k_of[rows])), shape=(k_of.size, len(programmes)))
+    return ~np.isin(lab, programmes), k_of, M, pd.Series({p: int((lab == p).sum()) for p in programmes})
+
+
+def _assert_derived_equal(ref, lab, programmes):
+    bg, k_of, M, sizes = _derived_v010(lab, programmes)
+    assert ref.background_mask.tobytes() == bg.tobytes()
+    assert ref.programme_index.dtype == k_of.dtype and ref.programme_index.tobytes() == k_of.tobytes()
+    got = ref.membership_matrix()
+    assert got.dtype == M.dtype and (got != M).nnz == 0 and got.has_canonical_format == M.has_canonical_format
+    pd.testing.assert_series_equal(ref.sizes(), sizes, check_exact=True)
+
+
+def test_reference_derived_arrays_are_cached_and_match_v010():
+    import copy
+    import pickle
+
+    ref = _toy_reference()
+    lab = ref.programme_of_feature.copy()
+    for _ in range(2):  # computed, then served from the cache
+        _assert_derived_equal(ref, lab, ref.programmes)
+    # returned arrays are copies: changing them does not change the reference
+    ref.background_mask[:] = False
+    ref.programme_index[:] = 7
+    ref.membership_matrix().data[:] = 5.0
+    _assert_derived_equal(ref, lab, ref.programmes)
+    # the stored labels are read-only; the caller's array is not aliased
+    with pytest.raises(ValueError):
+        ref.programme_of_feature[0] = "p1"
+    mine = np.array(["p0", "p1", "Shared", "Shared"], dtype=object)
+    ProgrammeReference(mine, ["p0", "p1"], np.zeros(4))
+    mine[0] = "p1"  # still writeable
+    # changing the programme list in place or assigning new labels recomputes
+    ref.programmes.remove("p2")
+    _assert_derived_equal(ref, lab, ["p0", "p1"])
+    new_lab = np.array(["p1"] * 4 + ["p0"] * 2 + ["Shared"] * 4, dtype=object)
+    ref.programme_of_feature = new_lab
+    _assert_derived_equal(ref, new_lab, ["p0", "p1"])
+    new_lab[0] = "p0"  # an assigned (writeable) array is never cached
+    _assert_derived_equal(ref, new_lab, ["p0", "p1"])
+    # pickling and copying keep the labels read-only and the results equal
+    for other in (pickle.loads(pickle.dumps(_toy_reference())), copy.deepcopy(_toy_reference())):
+        assert not other.programme_of_feature.flags.writeable
+        _assert_derived_equal(other, lab, other.programmes)
+
+
 def test_background_rates_use_cells_outside_the_defining_group():
     lab = np.array(["A", "B", "Shared", "Shared"])
     B = np.array([[1, 0, 1, 1],    # group A: D = 2

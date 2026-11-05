@@ -147,6 +147,15 @@ class ProgrammeReference:
     ValueError
         If ``beta_tilde`` does not have one entry per feature, a programme
         has no features, or fewer than two programmes are given.
+
+    Notes
+    -----
+    ``programme_of_feature`` is stored as a read-only copy of the labels.
+    The derived arrays (``background_mask``, ``programme_index``,
+    ``membership_matrix()``, ``sizes()``) are computed once and reused while
+    ``programme_of_feature`` and ``programmes`` are unchanged; assigning a
+    new ``programme_of_feature`` or changing ``programmes`` recomputes them.
+    Each call returns a new copy.
     """
 
     programme_of_feature: np.ndarray
@@ -170,6 +179,41 @@ class ProgrammeReference:
             raise ValueError(f"programmes without features: {missing}")
         if len(self.programmes) < 2:
             raise ValueError("at least two programmes are required (P_i = H / log K)")
+        self.programme_of_feature.flags.writeable = False
+
+    def __getstate__(self) -> dict:
+        state = dict(self.__dict__)
+        state.pop("_derived", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self.programme_of_feature.flags.writeable = False
+
+    def _derived_arrays(self) -> dict:
+        """Arrays derived from the labels, computed once per (labels, programmes).
+
+        The cache is keyed on the identity of ``programme_of_feature`` (a
+        read-only array) and on the tuple of ``programmes``. A writeable
+        ``programme_of_feature`` (assigned after construction) is never
+        cached.
+        """
+        key = (self.programme_of_feature, tuple(self.programmes))
+        cached = self.__dict__.get("_derived")
+        if cached is not None and cached["key"][0] is key[0] and cached["key"][1] == key[1]:
+            return cached
+        lab = self.programme_of_feature
+        k_of = np.full(lab.size, -1)
+        for k, p in enumerate(self.programmes):
+            k_of[lab == p] = k
+        rows = np.flatnonzero(k_of >= 0)
+        M = sparse.csr_matrix((np.ones(rows.size), (rows, k_of[rows])), shape=(k_of.size, len(self.programmes)))
+        cached = {"key": key, "background_mask": ~np.isin(lab, self.programmes), "programme_index": k_of,
+                  "membership_matrix": M,
+                  "sizes": pd.Series({p: int((lab == p).sum()) for p in self.programmes})}
+        if not lab.flags.writeable:  # an array assigned after construction may change in place: not cached
+            self.__dict__["_derived"] = cached
+        return cached
 
     @property
     def K(self) -> int:
@@ -179,15 +223,12 @@ class ProgrammeReference:
     @property
     def background_mask(self) -> np.ndarray:
         """Boolean mask of features outside every programme (the background block)."""
-        return ~np.isin(self.programme_of_feature, self.programmes)
+        return self._derived_arrays()["background_mask"].copy()
 
     @property
     def programme_index(self) -> np.ndarray:
         """Programme column of each feature, or -1 for background features."""
-        k_of = np.full(self.programme_of_feature.size, -1)
-        for k, p in enumerate(self.programmes):
-            k_of[self.programme_of_feature == p] = k
-        return k_of
+        return self._derived_arrays()["programme_index"].copy()
 
     def membership_matrix(self) -> sparse.csr_matrix:
         """Return the features x K indicator matrix ``M_jk = 1[j in R_k]``.
@@ -197,10 +238,7 @@ class ProgrammeReference:
         scipy.sparse.csr_matrix
             Sparse programme membership matrix.
         """
-        k_of = self.programme_index
-        rows = np.flatnonzero(k_of >= 0)
-        return sparse.csr_matrix((np.ones(rows.size), (rows, k_of[rows])),
-                                 shape=(k_of.size, self.K))
+        return self._derived_arrays()["membership_matrix"].copy()
 
     def sizes(self) -> pd.Series:
         """Return the number of peaks ``|R_k|`` in each programme.
@@ -210,7 +248,7 @@ class ProgrammeReference:
         pandas.Series
             Peak count indexed by programme.
         """
-        return pd.Series({p: int((self.programme_of_feature == p).sum()) for p in self.programmes})
+        return self._derived_arrays()["sizes"].copy()
 
 
 def _group_detection_rates(B, labels, groups):
