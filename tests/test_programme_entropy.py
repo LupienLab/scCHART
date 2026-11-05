@@ -182,6 +182,34 @@ def test_reference_background_rates_match_v010(kind):
         assert got.dtype == want.dtype and got.tobytes() == want.tobytes()
 
 
+def _group_detection_rates_v010(B, labels, groups):
+    """The v0.1.0 implementation, kept as the reference."""
+    labels = np.asarray(labels).astype(str)
+    X = sparse.csr_matrix(B, copy=True)
+    X.data = np.ones_like(X.data, dtype=np.float32)
+    index = {g: i for i, g in enumerate(groups)}
+    rows = np.flatnonzero(np.isin(labels, groups))
+    cols = np.array([index[l] for l in labels[rows]], dtype=np.int64)
+    ind = sparse.csr_matrix((np.ones(rows.size), (rows, cols)), shape=(labels.size, len(groups)))
+    group_sum = np.asarray((ind.T @ X).todense(), dtype=np.float64)
+    total_sum = np.asarray(X.sum(axis=0), dtype=np.float64).ravel()
+    n_in = np.asarray(ind.sum(axis=0)).ravel()
+    n_out = labels.size - n_in
+    inside = group_sum / np.maximum(n_in, 1)[:, None]
+    outside = (total_sum[None, :] - group_sum) / np.maximum(n_out, 1)[:, None]
+    return inside.astype(np.float32), outside.astype(np.float32)
+
+
+@pytest.mark.parametrize("kind", ["binary", "counts"])
+def test_group_detection_rates_and_programmes_match_v010(kind):
+    from scchart.programme_entropy import _group_detection_rates
+    X, g = _synthetic_programme_data(seed=25)
+    B = binarize(X) if kind == "binary" else (X * 3).tocsr()
+    groups = ["g0", "g2", "g1"]
+    for got, want in zip(_group_detection_rates(B, g, groups), _group_detection_rates_v010(B, g, groups)):
+        assert got.dtype == want.dtype and got.tobytes() == want.tobytes()
+
+
 def test_programme_evidence_explicit():
     ref = _toy_reference(0.05)
     B = np.array([[1, 1, 0, 0, 0, 0, 1, 1, 0, 0],       # D=2, only p0 open

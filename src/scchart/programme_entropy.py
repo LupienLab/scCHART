@@ -262,13 +262,23 @@ def _group_detection_rates(B, labels, groups):
         feature open, inside and outside each group.
     """
     labels = np.asarray(labels).astype(str)
-    X = sparse.csr_matrix(B, copy=True)
-    X.data = np.ones_like(X.data, dtype=np.float32)
+    # Already binary: count from B itself, without copying it. Counts below 2**24 are exact
+    # in float32 and float64 alike, so the rates equal those of the float32 copy below.
+    binary = (isinstance(B, sparse.csr_matrix) and B.dtype == np.float64 and bool(np.all(B.data == 1.0))
+              and B.shape[0] < 2 ** 24)
+    if binary:
+        X = B
+    else:
+        X = sparse.csr_matrix(B, copy=True)
+        X.data = np.ones_like(X.data, dtype=np.float32)
     index = {g: i for i, g in enumerate(groups)}
     rows = np.flatnonzero(np.isin(labels, groups))
     cols = np.array([index[l] for l in labels[rows]], dtype=np.int64)
     ind = sparse.csr_matrix((np.ones(rows.size), (rows, cols)), shape=(labels.size, len(groups)))
-    group_sum = np.asarray((ind.T @ X).todense(), dtype=np.float64)
+    if binary:  # X.T is a view; only the small indicator is converted (same exact counts)
+        group_sum = np.asarray((X.T @ ind).T.todense(), dtype=np.float64)
+    else:
+        group_sum = np.asarray((ind.T @ X).todense(), dtype=np.float64)
     total_sum = np.asarray(X.sum(axis=0), dtype=np.float64).ravel()
     n_in = np.asarray(ind.sum(axis=0)).ravel()
     n_out = labels.size - n_in
