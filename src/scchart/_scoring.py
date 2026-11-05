@@ -70,12 +70,14 @@ Populations below the reference depth are not upsampled.
 
 from __future__ import annotations
 
+import operator
 import warnings
 from dataclasses import dataclass
 from typing import Iterator, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+import numba
 from numba import njit, prange
 from scipy import sparse
 
@@ -359,6 +361,43 @@ def default_multiplier(sampler: str = DEFAULT_SAMPLER) -> float:
         If the sampler name is unsupported.
     """
     return PROPOSAL_MULTIPLIER if check_sampler(sampler) == SAMPLER_PROPOSAL_CLOCK else SWAP_MULTIPLIER
+
+
+def check_n_jobs(n_jobs) -> int:
+    """Validate ``n_jobs`` and return the number of chains run at once.
+
+    Parameters
+    ----------
+    n_jobs : int
+        A positive integer, or ``-1`` for all numba threads
+        (``numba.get_num_threads()``).
+
+    Returns
+    -------
+    int
+        Chains run at once: ``n_jobs`` capped at ``numba.get_num_threads()``
+        (more cannot run concurrently; the cap only saves memory). Results
+        do not depend on it.
+
+    Raises
+    ------
+    TypeError
+        If ``n_jobs`` is not an integer (``bool`` is rejected).
+    ValueError
+        If ``n_jobs`` is 0 or below -1.
+    """
+    if isinstance(n_jobs, (bool, np.bool_)):
+        raise TypeError(f"n_jobs must be an integer, got {n_jobs!r}")
+    try:
+        n = operator.index(n_jobs)
+    except TypeError:
+        raise TypeError(f"n_jobs must be an integer, got {n_jobs!r}") from None
+    threads = max(1, int(numba.get_num_threads()))
+    if n == -1:
+        return threads
+    if n < 1:
+        raise ValueError(f"n_jobs must be a positive integer or -1 (all numba threads), got {n}")
+    return min(n, threads)
 
 
 @njit(cache=True)
@@ -710,8 +749,9 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
     max_attempt_factor : int, optional
         Accepted-swap proposal cap, as in :func:`swap_randomise`.
     n_jobs : int, optional
-        Number of chains run in parallel per batch (numba ``prange``).
-        Default 1 (serial).
+        Number of chains run in parallel per batch (numba ``prange``):
+        a positive integer, or -1 for all numba threads. Values above
+        ``numba.get_num_threads()`` are capped at it. Default 1 (serial).
 
     Yields
     ------
@@ -722,6 +762,10 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
 
     Raises
     ------
+    TypeError, ValueError
+        If ``n_jobs`` is invalid (see :func:`check_n_jobs`). The sampler and
+        ``n_jobs`` are checked when the function is called, before the first
+        replicate is requested.
     ValueError
         If the sampler name is unsupported.
     AssertionError
@@ -735,6 +779,12 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
     about 16 bytes per occupied entry for the entry index arrays.
     """
     check_sampler(sampler)
+    step = check_n_jobs(n_jobs)
+    return _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step)
+
+
+def _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step):
+    """Generator behind :func:`swap_replicates` (arguments already validated)."""
     D0 = as_binary_dense(B)
     rows0, cols0 = np.nonzero(D0)
     rows0 = rows0.astype(np.int64)
@@ -747,7 +797,6 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
         for s in seeds:
             yield D0.copy(), _diagnostics(D0, D0, s, nnz, 0, 0, 0, r0, c0, sampler)
         return
-    step = max(int(n_jobs), 1)
     for start in range(0, seeds.size, step):
         batch = seeds[start:start + step]
         if batch.size == 1:

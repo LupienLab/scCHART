@@ -111,6 +111,7 @@ from scipy.sparse.linalg import svds
 
 from ._scoring import (
     N_NULL_REPLICATES,
+    check_n_jobs,
     DEFAULT_SAMPLER,
     DepthStandardizedResult,
     binarize,
@@ -802,7 +803,8 @@ def structural_null_calibration(B, project: Projector, *, n_replicates: int = N_
         Explicit chain seeds, one per replicate.
     n_jobs : int, optional
         Chains run in parallel batches of this size (memory about
-        ``n_jobs`` dense copies of ``B``). Default 1.
+        ``n_jobs`` dense copies of ``B``): a positive integer, or -1 for all
+        numba threads. Results do not depend on it. Default 1.
     adapter : {"signed_channel", "spectral_energy"}, optional
         Simplex adapter, used for both observed and null cells.
     Z_obs : numpy.ndarray, optional
@@ -819,6 +821,7 @@ def structural_null_calibration(B, project: Projector, *, n_replicates: int = N_
         If a cell has no open feature, or ``Z_obs`` differs from
         ``project(B)``.
     """
+    check_n_jobs(n_jobs)
     Bb = binarize(B)
     n_open = np.asarray(Bb.sum(axis=1)).ravel()
     if np.any(n_open <= 0):
@@ -880,6 +883,7 @@ def structural_population_calibration(X, groups, project: Projector, *,
     calibrations : dict
         :class:`StructuralCalibration` of each population.
     """
+    check_n_jobs(n_jobs)
     B = binarize(X)
     g = check_labels(groups, B.shape[0])
     pops = list(populations) if populations is not None else sorted(set(g))
@@ -970,6 +974,7 @@ def depth_standardized_structural_comparison(
     Populations evaluated once (``q_G = 1``) repeat their single value
     across replicates in the pairwise agreement table.
     """
+    check_n_jobs(n_jobs)
     X = sparse.csr_matrix(X)
     g = check_labels(groups, X.shape[0])
     pops = list(populations) if populations is not None else sorted(set(g))

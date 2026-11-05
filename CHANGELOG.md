@@ -3,6 +3,23 @@
 
 All notable changes to scCHART are documented here.
 
+## Unreleased
+
+Performance and memory improvements. All scores, null distributions, seeds and matched-depth results are byte-identical to 0.1.0, for every value of `n_jobs`.
+
+### Performance
+
+- The programme null runs its chains in parallel: `n_jobs` is added to `programme_null_replicates`, `programme_null_calibration`, `crossfit_population_calibration` and `depth_standardized_programme_comparison`, and `Heterogeneity(n_jobs=...)` now applies to both nulls. Each chain keeps its own seed, so results do not depend on `n_jobs`.
+- The dense null block is built directly from the sparse input, without a float copy of the whole cells x features matrix (about 10 bytes per cell x feature before, 1 byte now).
+- `binarize` makes one copy instead of two, and the programme axis no longer re-binarizes matrices that are already binary.
+- The programme axis computes background depth, background rates and group detection rates without copying the background columns or converting the reference matrix to CSC.
+- `ProgrammeReference` computes `background_mask`, `programme_index`, `membership_matrix()` and `sizes()` once instead of on every access.
+
+### Changed
+
+- `n_jobs` is validated: a positive integer, or `-1` for all numba threads. `0`, values below `-1` and non-integers (including `bool` and `float`) now raise `ValueError` / `TypeError`; 0.1.0 silently ran them serially (non-positive values) or truncated them with `int()`. Values above `numba.get_num_threads()` are capped at it, which only reduces memory.
+- `ProgrammeReference.programme_of_feature` (the reference's own copy of the labels) is read-only; editing it in place raises. Assign a new array, or build a new reference, to change the labels.
+
 ## 0.1.0 (unreleased)
 
 Initial release of **scCHART** (single-cell Chromatin Heterogeneity Assessment and Ranking Tool), an information-theoretic framework for quantifying structural and regulatory programme heterogeneity from single-cell chromatin accessibility data.

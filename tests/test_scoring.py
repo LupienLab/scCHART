@@ -229,3 +229,41 @@ def test_pairwise_replicate_agreement_is_descriptive():
 def test_downsampling_fractions_label_length():
     with pytest.raises(ValueError, match="one label per cell"):
         downsampling_fractions(np.ones(5), ["a"] * 4, 1.0)
+
+
+# ----------------------------------------------------------------------------- n_jobs
+def test_n_jobs_values_give_identical_replicates():
+    import numba
+
+    from scchart._scoring import check_n_jobs
+
+    rng = np.random.default_rng(8)
+    B = _binary(rng, 25, 30, 0.3)
+    seeds = [11, 12, 13, 14, 15]
+    ref = [D.tobytes() for D, _ in swap_replicates(B, seeds)]
+    threads = numba.get_num_threads()
+    for n_jobs in (1, 2, 5, np.int64(3), 10_000, -1):
+        assert [D.tobytes() for D, _ in swap_replicates(B, seeds, n_jobs=n_jobs)] == ref
+    assert check_n_jobs(-1) == threads
+    assert check_n_jobs(10_000) == threads
+    assert check_n_jobs(1) == 1
+
+
+@pytest.mark.parametrize("bad, err", [(0, ValueError), (-2, ValueError), (2.0, TypeError), (True, TypeError),
+                                      ("4", TypeError), (None, TypeError)])
+def test_invalid_n_jobs_is_rejected_when_called(bad, err):
+    import scchart
+    from scchart.programme_entropy import crossfit_population_calibration
+    from scchart.structural_divergence import structural_null_calibration
+
+    B = _binary(np.random.default_rng(9), 10, 12, 0.3)
+    with pytest.raises(err, match="n_jobs"):
+        swap_replicates(B, [1, 2], n_jobs=bad)          # raised at the call, before iteration
+    with pytest.raises(err, match="n_jobs"):
+        swap_replicates(np.zeros((3, 3)), [1], n_jobs=bad)   # also for a block with no chain to run
+    with pytest.raises(err, match="n_jobs"):
+        scchart.Heterogeneity(n_jobs=bad)
+    with pytest.raises(err, match="n_jobs"):
+        structural_null_calibration(B, lambda b: None, n_jobs=bad)
+    with pytest.raises(err, match="n_jobs"):
+        crossfit_population_calibration(B, np.zeros(10).astype(str), [], n_jobs=bad)

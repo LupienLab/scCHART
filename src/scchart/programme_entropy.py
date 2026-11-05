@@ -88,6 +88,7 @@ from scipy import sparse
 
 from ._scoring import (
     N_NULL_REPLICATES,
+    check_n_jobs,
     _as_binary,
     DEFAULT_SAMPLER,
     DepthStandardizedResult,
@@ -992,6 +993,7 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     background chains run on the dense background block, which needs about
     ``n_jobs * n_cells * n_background_features`` bytes.
     """
+    check_n_jobs(n_jobs)
     Bb = _as_binary(B)
     bgm = reference.background_mask
     prog_cols = np.flatnonzero(~bgm)
@@ -1134,6 +1136,7 @@ def programme_null_calibration(parts: Sequence[tuple], *, n_replicates: int = N_
     ValueError
         If ``null_cells`` is invalid.
     """
+    check_n_jobs(n_jobs)
     if null_cells not in ("scored", "all"):
         raise ValueError("null_cells must be 'scored' or 'all'")
     r_obs, null_r = [], [[] for _ in range(n_replicates)]
@@ -1218,6 +1221,7 @@ def crossfit_population_calibration(X, labels, references: Sequence[ProgrammeRef
     calibrations : dict
         :class:`ProgrammeCalibration` of each population.
     """
+    check_n_jobs(n_jobs)
     B = _as_binary(X)
     lab = check_labels(labels, B.shape[0], name="labels")
     pops = list(populations) if populations is not None else sorted(set(lab))
@@ -1308,6 +1312,7 @@ def depth_standardized_programme_comparison(
     ``n_replicates`` replicates, including populations with ``q_G = 1``.
     Cells left with no open feature are kept and become unscorable.
     """
+    check_n_jobs(n_jobs)
     X = sparse.csr_matrix(X)
     lab = check_labels(labels, X.shape[0], name="labels")
     pops = list(populations) if populations is not None else sorted(set(lab))

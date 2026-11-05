@@ -25,6 +25,7 @@ of every population are stored in ``adata.uns["scchart"]`` and in
 
 from __future__ import annotations
 
+import operator
 import time
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -33,7 +34,7 @@ import pandas as pd
 from anndata import AnnData
 from scipy import sparse
 
-from ._scoring import DEFAULT_SAMPLER, binarize, check_sampler, seed_key
+from ._scoring import DEFAULT_SAMPLER, binarize, check_n_jobs, check_sampler, seed_key
 from .programme_entropy import (
     ProgrammeHeterogeneity,
     ProgrammeReference,
@@ -129,7 +130,8 @@ class Heterogeneity:
         ``"proposal_clock"``.
     n_jobs : int, optional
         Null chains run in parallel, for the structural and the programme
-        null (results do not depend on it). Default 1.
+        null (results do not depend on it): a positive integer, or -1 for
+        all numba threads. Default 1.
     store_probabilities : bool, optional
         Store the structural ``p_i`` in ``adata.obsm``. Default True.
     verbose : bool, optional
@@ -203,6 +205,7 @@ class Heterogeneity:
         if null_cells not in ("scored", "all"):
             raise ValueError("null_cells must be 'scored' or 'all'")
         check_sampler(null_sampler)
+        check_n_jobs(n_jobs)
         self.structural = bool(structural)
         self.programme = bool(programme)
         self.use_rep = use_rep
@@ -217,7 +220,7 @@ class Heterogeneity:
         self.programme_seed = int(programme_seed)
         self.null_cells = null_cells
         self.null_sampler = null_sampler
-        self.n_jobs = int(n_jobs)
+        self.n_jobs = operator.index(n_jobs)
         self.store_probabilities = bool(store_probabilities)
         self.verbose = bool(verbose)
 
