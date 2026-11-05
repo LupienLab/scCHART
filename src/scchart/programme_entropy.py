@@ -406,18 +406,49 @@ def reference_background_rates(B_ref, ref_groups, programme_of_feature, programm
     g = np.asarray(ref_groups).astype(str)
     lab = np.asarray(programme_of_feature).astype(str)
     bgm = ~np.isin(lab, list(programmes))
-    D_ref = np.asarray(B_ref[:, bgm].sum(axis=1)).ravel()
     beta_t = np.zeros(B_ref.shape[1])
-    Bc = sparse.csc_matrix(B_ref)
+    if _integer_valued_sparse(B_ref):
+        # Only the programme columns are copied. With integer entries every sum below is
+        # exact in any order, so the rates equal the general path below exactly.
+        B_ref = sparse.csr_matrix(B_ref)
+        prog_cols = np.flatnonzero(~bgm)
+        Bp = sparse.csc_matrix(B_ref[:, prog_cols])
+        D_ref = np.asarray(B_ref.sum(axis=1)).ravel() - np.asarray(Bp.sum(axis=1)).ravel()
+        local = np.full(lab.size, -1)
+        local[prog_cols] = np.arange(prog_cols.size)
+
+        def numerator(out, cols):
+            return np.asarray(Bp[:, local[cols]][out].sum(axis=0)).ravel()
+    else:
+        D_ref = np.asarray(B_ref[:, bgm].sum(axis=1)).ravel()
+        Bc = sparse.csc_matrix(B_ref)
+
+        def numerator(out, cols):
+            return np.asarray(Bc[out][:, cols].sum(axis=0)).ravel()
     for p in programmes:
         cols = np.flatnonzero(lab == p)
         if cols.size == 0:
             continue
         defining = (programme_groups or {}).get(p, p)
         out = g != defining
-        num = np.asarray(Bc[out][:, cols].sum(axis=0)).ravel()
-        beta_t[cols] = num / max(D_ref[out].sum(), 1e-12)
+        beta_t[cols] = numerator(out, cols) / max(D_ref[out].sum(), 1e-12)
     return beta_t
+
+
+def _integer_valued_sparse(B) -> bool:
+    """True for a sparse matrix of finite integer values whose absolute sum is below 2**53.
+
+    Sums of such entries are exact in float64 (and in integer dtypes) whatever
+    the order of summation.
+    """
+    if not sparse.issparse(B):
+        return False
+    d = B.tocsr().data if B.format not in ("csr", "csc", "coo") else B.data
+    if d.dtype.kind in "biu":
+        return True
+    if d.dtype.kind != "f" or not np.all(np.isfinite(d)):
+        return False
+    return bool(np.all(d == np.trunc(d)) and np.abs(d).sum() < 2.0 ** 53)
 
 
 def external_programme_reference(programme_of_feature, B_ref=None, ref_groups=None, *,

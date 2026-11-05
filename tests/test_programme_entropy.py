@@ -149,6 +149,39 @@ def test_background_rates_use_cells_outside_the_defining_group():
 
 
 # ============================================================================= evidence
+def _reference_background_rates_v010(B_ref, ref_groups, programme_of_feature, programmes, programme_groups=None):
+    """The v0.1.0 implementation, kept as the reference."""
+    g = np.asarray(ref_groups).astype(str)
+    lab = np.asarray(programme_of_feature).astype(str)
+    bgm = ~np.isin(lab, list(programmes))
+    D_ref = np.asarray(B_ref[:, bgm].sum(axis=1)).ravel()
+    beta_t = np.zeros(B_ref.shape[1])
+    Bc = sparse.csc_matrix(B_ref)
+    for p in programmes:
+        cols = np.flatnonzero(lab == p)
+        if cols.size == 0:
+            continue
+        out = g != (programme_groups or {}).get(p, p)
+        beta_t[cols] = np.asarray(Bc[out][:, cols].sum(axis=0)).ravel() / max(D_ref[out].sum(), 1e-12)
+    return beta_t
+
+
+@pytest.mark.parametrize("kind", ["binary", "float32_counts", "uint32_counts", "int64_csc", "nonint", "dense"])
+def test_reference_background_rates_match_v010(kind):
+    X, g = _synthetic_programme_data(seed=24)
+    B = binarize(X)
+    rng = np.random.default_rng(1)
+    M = {"binary": B, "float32_counts": (B * 3).astype(np.float32), "uint32_counts": (B * 2).astype(np.uint32),
+         "int64_csc": sparse.csc_matrix((B * 4).astype(np.int64)),
+         "nonint": B.multiply(rng.random(B.shape)).tocsr(), "dense": B.toarray()}[kind]
+    lab = EXTERNAL
+    progs = ["g0", "g1", "g2", "absent"]
+    for pg in (None, {"g0": "g1", "g2": "nobody"}):
+        got = reference_background_rates(M, g, lab, progs, programme_groups=pg)
+        want = _reference_background_rates_v010(M, g, lab, progs, programme_groups=pg)
+        assert got.dtype == want.dtype and got.tobytes() == want.tobytes()
+
+
 def test_programme_evidence_explicit():
     ref = _toy_reference(0.05)
     B = np.array([[1, 1, 0, 0, 0, 0, 1, 1, 0, 0],       # D=2, only p0 open
