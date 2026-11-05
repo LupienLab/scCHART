@@ -23,7 +23,7 @@ Structural null calibration within `model.fit()` is the most computationally exp
 
 Optional environment variables:
 
-- `SCCHART_N_JOBS`: Number of parallel structural null chains (default: `min(8, CPU count)`). Does not change the calculated results.
+- `SCCHART_N_JOBS`: Number of parallel null chains (structural and programme; default: `min(8, CPU count)`). Does not change the calculated results.
 - `SCCHART_TUTORIAL_MATCHED_DEPTH=1`: Also runs structural matched-depth comparison, which is substantially more computationally expensive.
 - `SCCHART_PBMC_DATA`: Path to an existing prepared input dataset.
 

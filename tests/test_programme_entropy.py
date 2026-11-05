@@ -278,6 +278,57 @@ def test_null_cells_option():
     assert cal.J_null.size == 2
 
 
+def _programme_null_replicates_v010(B, ref, n_replicates, sampler, seed, randomise_background):
+    """The v0.1.0 serial loop (one swap_randomise call per chain), kept as the reference."""
+    Bb = binarize(B)
+    bgm = ref.background_mask
+    M = ref.membership_matrix()[np.flatnonzero(~bgm)]
+    Bp, Bg = Bb[:, np.flatnonzero(~bgm)], Bb[:, np.flatnonzero(bgm)]
+    D0 = np.asarray(Bg.sum(axis=1)).ravel()
+    size = np.asarray(M.sum(axis=0)).ravel()
+    rs, diags = [], []
+    for b in range(n_replicates):
+        Np, dp = swap_randomise(Bp, seed + 2 * b, sampler=sampler)
+        diags.append(("programme", dp))
+        D = D0
+        if randomise_background:
+            Nb, db = swap_randomise(Bg, seed + 2 * b + 1, sampler=sampler)
+            diags.append(("background", db))
+            D = Nb.sum(axis=1).astype(np.float64)
+        O = (sparse.csr_matrix(Np, dtype=np.float64) @ M).toarray()
+        a = np.maximum(0.0, (O - D[:, None] * np.asarray(M.T @ ref.beta_tilde[~bgm]).ravel()[None, :]) / size)
+        rs.append(programme_membership(a))
+    return rs, diags
+
+
+@pytest.mark.parametrize("sampler", ["proposal_clock", "accepted_swap"])
+@pytest.mark.parametrize("randomise_background", [False, True])
+def test_programme_null_replicates_match_v010_serial_loop_for_any_n_jobs(sampler, randomise_background):
+    X, g = _synthetic_programme_data(seed=21)
+    ref = crossfit_programme_references(X, g, n_folds=3, rule=RULE)[0]
+    B = X[ref.score_index[g[ref.score_index] == "g2"]]
+    want_r, want_d = _programme_null_replicates_v010(B, ref, 5, sampler, 300, randomise_background)
+    for n_jobs in (1, 2, 3, 8):
+        r, d = programme_null_replicates(B, ref, n_replicates=5, sampler=sampler, seed=300,
+                                         randomise_background=randomise_background, n_jobs=n_jobs)
+        assert [x.tobytes() for x in r] == [x.tobytes() for x in want_r]
+        assert d == want_d
+
+
+@pytest.mark.parametrize("null_cells", ["scored", "all"])
+def test_programme_calibration_does_not_depend_on_n_jobs(null_cells):
+    X, g = _synthetic_programme_data(seed=22)
+    refs = crossfit_programme_references(X, g, n_folds=3, rule=RULE)
+    t1, c1 = crossfit_population_calibration(X, g, refs, n_replicates=5, seed=9, null_cells=null_cells)
+    t4, c4 = crossfit_population_calibration(X, g, refs, n_replicates=5, seed=9, null_cells=null_cells, n_jobs=4)
+    pd.testing.assert_frame_equal(t1, t4, check_exact=True)
+    for G in c1:
+        assert c1[G].J_null.tobytes() == c4[G].J_null.tobytes()
+    d1 = depth_standardized_programme_comparison(X * 2, g, refs, 10.0, n_replicates=2, n_null=3)
+    d4 = depth_standardized_programme_comparison(X * 2, g, refs, 10.0, n_replicates=2, n_null=3, n_jobs=3)
+    pd.testing.assert_frame_equal(d1.replicates, d4.replicates, check_exact=True)
+
+
 # ============================================================================= matched depth
 def test_depth_standardized_programme_runs_and_never_upsamples():
     X, g = _synthetic_programme_data(seed=18)

@@ -98,7 +98,7 @@ from ._scoring import (
     entropy_bits,
     kl_bits,
     pairwise_replicate_agreement,
-    swap_randomise,
+    swap_replicates,
 )
 
 SHARED_LABEL = "Shared"
@@ -844,7 +844,7 @@ def score_crossfit(X, references: Sequence[ProgrammeReference]) -> ProgrammeScor
 
 def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates: int = N_NULL_REPLICATES,
                               sampler: str = DEFAULT_SAMPLER, n_mult: Optional[float] = None, seed: int = 0,
-                              randomise_background: bool = False) -> tuple[list, list]:
+                              randomise_background: bool = False, n_jobs: int = 1) -> tuple[list, list]:
     """Generate null compositions for the cells of one population and fold.
 
     In replicate ``b`` the programme block (features in the union of the
@@ -868,6 +868,10 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
         Base seed. Default 0.
     randomise_background : bool, optional
         Also randomize the background block. Default False.
+    n_jobs : int, optional
+        Number of replicate chains run in parallel per batch (see
+        :func:`scchart._scoring.swap_replicates`). The results do not depend
+        on it. Default 1.
 
     Returns
     -------
@@ -882,6 +886,11 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     The evidence uses the background block only through ``D_i``, which the
     swaps preserve exactly, so ``randomise_background=False`` gives
     identical scores.
+
+    Every chain is seeded by its own replicate seed, so replicate ``b`` is
+    the same whatever ``n_jobs`` is. With ``randomise_background=True`` the
+    background chains run on the dense background block, which needs about
+    ``n_jobs * n_cells * n_background_features`` bytes.
     """
     Bb = binarize(B)
     bgm = reference.background_mask
@@ -893,12 +902,17 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     D0 = np.asarray(Bg.sum(axis=1)).ravel()
     beta_p = reference.beta_tilde[prog_cols]
     rs, diags = [], []
+    programme_chains = swap_replicates(Bp, [seed + 2 * b for b in range(n_replicates)], sampler=sampler,
+                                       n_mult=n_mult, n_jobs=n_jobs)
+    if randomise_background:
+        background_chains = swap_replicates(Bg, [seed + 2 * b + 1 for b in range(n_replicates)], sampler=sampler,
+                                            n_mult=n_mult, n_jobs=n_jobs)
     for b in range(n_replicates):
-        Np, dp = swap_randomise(Bp, seed + 2 * b, sampler=sampler, n_mult=n_mult)
+        Np, dp = next(programme_chains)
         diags.append(("programme", dp))
         D = D0
         if randomise_background:
-            Nb, db = swap_randomise(Bg, seed + 2 * b + 1, sampler=sampler, n_mult=n_mult)
+            Nb, db = next(background_chains)
             diags.append(("background", db))
             D = Nb.sum(axis=1).astype(np.float64)
         O = sparse.csr_matrix(Np, dtype=np.float64) @ M
@@ -979,7 +993,7 @@ def _pooled_J(r: np.ndarray) -> float:
 
 def programme_null_calibration(parts: Sequence[tuple], *, n_replicates: int = N_NULL_REPLICATES,
                                sampler: str = DEFAULT_SAMPLER, n_mult: Optional[float] = None, null_cells: str = "scored",
-                               randomise_background: bool = False) -> ProgrammeCalibration:
+                               randomise_background: bool = False, n_jobs: int = 1) -> ProgrammeCalibration:
     """Calibrate one population's ``J_G^(P)``, pooled over its cross-fit folds.
 
     Parameters
@@ -1005,6 +1019,9 @@ def programme_null_calibration(parts: Sequence[tuple], *, n_replicates: int = N_
     randomise_background : bool, optional
         Also randomize the background block (does not change the scores).
         Default False.
+    n_jobs : int, optional
+        Null chains run in parallel per batch. The results do not depend on
+        it. Default 1.
 
     Returns
     -------
@@ -1030,7 +1047,7 @@ def programme_null_calibration(parts: Sequence[tuple], *, n_replicates: int = N_
         if Bn.shape[0] == 0:
             continue
         rs, dg = programme_null_replicates(Bn, ref, n_replicates=n_replicates, sampler=sampler, n_mult=n_mult, seed=seed,
-                                           randomise_background=randomise_background)
+                                           randomise_background=randomise_background, n_jobs=n_jobs)
         for b in range(n_replicates):
             null_r[b].append(rs[b])
         margins &= all(d.margins_exact for _, d in dg)
@@ -1065,7 +1082,7 @@ def crossfit_population_calibration(X, labels, references: Sequence[ProgrammeRef
                                     populations: Optional[Sequence[str]] = None,
                                     seed: int = 10_000_000, n_replicates: int = N_NULL_REPLICATES,
                                     sampler: str = DEFAULT_SAMPLER, n_mult: Optional[float] = None, null_cells: str = "scored",
-                                    randomise_background: bool = False,
+                                    randomise_background: bool = False, n_jobs: int = 1,
                                     verbose: bool = False) -> tuple[pd.DataFrame, Dict[str, ProgrammeCalibration]]:
     """Calibrate every population's programme heterogeneity, ``Delta_G^(P)``.
 
@@ -1087,7 +1104,7 @@ def crossfit_population_calibration(X, labels, references: Sequence[ProgrammeRef
         Populations to calibrate, in order. Default: all labels, sorted.
     seed : int, optional
         Base seed. Default 10_000_000.
-    n_replicates, sampler, n_mult, null_cells, randomise_background
+    n_replicates, sampler, n_mult, null_cells, randomise_background, n_jobs
         As in :func:`programme_null_calibration`.
     verbose : bool, optional
         Print one progress line per population. Default False.
@@ -1112,7 +1129,8 @@ def crossfit_population_calibration(X, labels, references: Sequence[ProgrammeRef
             if idx.size:
                 parts.append((B[idx], ref, seed + 10_000 * (ref.fold or 0) + 100 * gi))
         cal = programme_null_calibration(parts, n_replicates=n_replicates, sampler=sampler, n_mult=n_mult,
-                                         null_cells=null_cells, randomise_background=randomise_background)
+                                         null_cells=null_cells, randomise_background=randomise_background,
+                                         n_jobs=n_jobs)
         objs[G] = cal
         rows.append({"population": G, **cal.summary()})
         if verbose:
@@ -1130,7 +1148,7 @@ def depth_standardized_programme_comparison(
         populations: Optional[Sequence[str]] = None, n_replicates: int = 5, seed: int = 900_000,
         null_seed: int = 20_000_000, dstar_index: int = 0, n_null: int = N_NULL_REPLICATES,
         sampler: str = DEFAULT_SAMPLER, n_mult: Optional[float] = None, null_cells: str = "scored",
-        verbose: bool = False) -> DepthStandardizedResult:
+        n_jobs: int = 1, verbose: bool = False) -> DepthStandardizedResult:
     """Compute ``Delta_G^(P)(D*)`` at a declared common effective depth.
 
     For replicate ``t``:
@@ -1167,7 +1185,7 @@ def depth_standardized_programme_comparison(
         Default 0.
     n_null : int, optional
         Null replicates per calibration. Default 20.
-    sampler, n_mult, null_cells
+    sampler, n_mult, null_cells, n_jobs
         As in :func:`programme_null_calibration`.
     verbose : bool, optional
         Print one progress line per replicate. Default False.
@@ -1212,7 +1230,7 @@ def depth_standardized_programme_comparison(
                     open_after[G].append(np.asarray(Bte[loc].sum(axis=1)).ravel())
         for G in pops:
             cal = programme_null_calibration(parts[G], n_replicates=n_null, sampler=sampler, n_mult=n_mult,
-                                             null_cells=null_cells)
+                                             null_cells=null_cells, n_jobs=n_jobs)
             rows.append({"population": G, "replicate": t, "q": q_pop[G], "D_star": D_star,
                          "median_open_after": float(np.median(np.concatenate(open_after[G]))),
                          **cal.summary()})

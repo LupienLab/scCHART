@@ -128,8 +128,8 @@ class Heterogeneity:
         Fixed-margin null sampler for both axes. Default
         ``"proposal_clock"``.
     n_jobs : int, optional
-        Parallel structural null chains (results do not depend on it).
-        Default 1.
+        Null chains run in parallel, for the structural and the programme
+        null (results do not depend on it). Default 1.
     store_probabilities : bool, optional
         Store the structural ``p_i`` in ``adata.obsm``. Default True.
     verbose : bool, optional
@@ -478,7 +478,8 @@ class Heterogeneity:
                 stage("Programme null calibration (E0[J_G^(P)], Delta_G^(P))")
                 tab, p_cal = crossfit_population_calibration(
                     X, labels, refs, populations=order, seed=self.programme_seed,
-                    null_cells=self.null_cells, sampler=self.null_sampler, verbose=self.verbose)
+                    null_cells=self.null_cells, sampler=self.null_sampler, n_jobs=self.n_jobs,
+                    verbose=self.verbose)
                 programme_table = programme_table.join(tab[_PROGRAMME_CAL_COLUMNS])
                 done("programme null")
 
