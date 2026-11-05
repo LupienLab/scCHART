@@ -11,6 +11,7 @@ from scipy import sparse
 
 from scchart._scoring import (
     UpsamplingWarning,
+    as_binary_dense,
     binarize,
     binomial_downsample,
     downsampling_fractions,
@@ -74,6 +75,36 @@ def test_binarize():
 
 
 # ----------------------------------------------------------------------------- fixed-margin null
+def _as_binary_dense_v010(B):
+    """The v0.1.0 implementation (dense float copy of the input), kept as the reference."""
+    D = (B.toarray() > 0) if sparse.issparse(B) else (np.asarray(B) > 0)
+    return np.ascontiguousarray(D.astype(np.uint8))
+
+
+@pytest.mark.parametrize("fmt", ["csr", "csc", "coo", "dense"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, np.int64])
+def test_as_binary_dense_matches_v010(fmt, dtype):
+    rng = np.random.default_rng(3)
+    X = rng.integers(-1, 3, (40, 70)).astype(dtype) * (rng.random((40, 70)) < 0.2)
+    M = X if fmt == "dense" else getattr(sparse, f"{fmt}_matrix")(X)
+    got, want = as_binary_dense(M), _as_binary_dense_v010(M)
+    assert got.dtype == np.uint8 and got.flags.c_contiguous
+    assert got.tobytes() == want.tobytes()
+
+
+def test_as_binary_dense_non_canonical_sparse_matches_v010():
+    # duplicate entries are summed (as toarray() does); explicit zeros, negatives and NaN are closed
+    coo = sparse.coo_matrix((np.array([1.0, -1.0, 2.0, 0.0, np.nan, 3.0, -4.0, 5.0]),
+                             (np.array([0, 0, 1, 1, 2, 2, 3, 3]), np.array([1, 1, 2, 3, 0, 0, 2, 2]))),
+                            shape=(4, 4))
+    csr = sparse.csr_matrix((np.array([2.0, -2.0, 1.0, 0.0, 1.0]), np.array([1, 1, 0, 2, 0]),
+                             np.array([0, 2, 5])), shape=(2, 3))
+    assert not csr.has_canonical_format
+    for M in (coo, csr):
+        assert as_binary_dense(M).tobytes() == _as_binary_dense_v010(M).tobytes()
+    assert csr.data.tolist() == [2.0, -2.0, 1.0, 0.0, 1.0]  # input not modified
+
+
 def test_swap_null_preserves_margins_and_is_deterministic():
     rng = np.random.default_rng(5)
     B = _binary(rng, 40, 60, 0.2)

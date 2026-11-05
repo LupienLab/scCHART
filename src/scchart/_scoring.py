@@ -521,11 +521,27 @@ def as_binary_dense(B) -> np.ndarray:
     -------
     numpy.ndarray
         C-contiguous ``uint8`` array with entries ``1[B > 0]``.
+
+    Notes
+    -----
+    A sparse input is written straight into the ``uint8`` result from its
+    stored entries, without an intermediate dense array of the input's
+    dtype. Duplicate entries are summed first, as ``toarray()`` does.
     """
     if sparse.issparse(B):
-        D = (B.toarray() > 0)
-    else:
-        D = np.asarray(B) > 0
+        B = sparse.csr_matrix(B)
+        if not B.has_canonical_format:
+            B = B.copy()
+            B.sum_duplicates()
+        D = np.zeros(B.shape, dtype=np.uint8)
+        rows = np.repeat(np.arange(B.shape[0], dtype=np.intp), np.diff(B.indptr))
+        pos = B.data > 0
+        if pos.all():
+            D[rows, B.indices] = 1
+        else:
+            D[rows[pos], B.indices[pos]] = 1
+        return D
+    D = np.asarray(B) > 0
     return np.ascontiguousarray(D.astype(np.uint8))
 
 
@@ -703,7 +719,8 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
     -----
     Each replicate equals the output of :func:`swap_randomise` for the
     same seed, whatever the value of ``n_jobs``. Peak memory is about
-    ``(n_jobs + 1) * n_cells * n_features`` bytes.
+    ``(n_jobs + 1) * n_cells * n_features`` bytes (``uint8`` blocks), plus
+    about 16 bytes per occupied entry for the entry index arrays.
     """
     check_sampler(sampler)
     D0 = as_binary_dense(B)
