@@ -456,9 +456,17 @@ def _integer_valued_sparse(B) -> bool:
     d = B.tocsr().data if B.format not in ("csr", "csc", "coo") else B.data
     if d.dtype.kind in "biu":
         return True
-    if d.dtype.kind != "f" or not np.all(np.isfinite(d)):
+    if d.dtype.kind != "f":
         return False
-    return bool(np.all(d == np.trunc(d)) and np.abs(d).sum() < 2.0 ** 53)
+    if bool(np.all(d == 1.0)):  # binary: the common case
+        return d.size < 2 ** 53
+    total = 0.0
+    for start in range(0, d.size, 1 << 20):  # chunked, to avoid a full-size temporary
+        c = d[start:start + (1 << 20)]
+        if not (np.all(np.isfinite(c)) and np.all(c == np.trunc(c))):
+            return False
+        total += float(np.abs(c).sum())
+    return total < 2.0 ** 53
 
 
 def external_programme_reference(programme_of_feature, B_ref=None, ref_groups=None, *,
