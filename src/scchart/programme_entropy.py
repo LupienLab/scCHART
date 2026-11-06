@@ -100,7 +100,9 @@ from ._scoring import (
     entropy_bits,
     kl_bits,
     pairwise_replicate_agreement,
-    swap_replicates,
+    MAX_ATTEMPT_FACTOR,
+    check_sampler,
+    _swap_replicates_csr,
 )
 
 SHARED_LABEL = "Shared"
@@ -990,10 +992,10 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
 
     Every chain is seeded by its own replicate seed, so replicate ``b`` is
     the same whatever ``n_jobs`` is. With ``randomise_background=True`` the
-    background chains run on the dense background block, which needs about
-    ``n_jobs * n_cells * n_background_features`` bytes.
+    background chains run on the background block, bit-packed: about
+    ``n_jobs * n_cells * n_background_features / 8`` bytes.
     """
-    check_n_jobs(n_jobs)
+    step = check_n_jobs(n_jobs)
     Bb = _as_binary(B)
     bgm = reference.background_mask
     prog_cols = np.flatnonzero(~bgm)
@@ -1005,11 +1007,14 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
     D0 = np.asarray(Bb.sum(axis=1)).ravel() - np.asarray(Bp.sum(axis=1)).ravel()
     beta_p = reference.beta_tilde[prog_cols]
     rs, diags = [], []
-    programme_chains = swap_replicates(Bp, [seed + 2 * b for b in range(n_replicates)], sampler=sampler,
-                                       n_mult=n_mult, n_jobs=n_jobs)
+    # Null blocks come as float64 CSR built from the chains' bit-packed matrices (identical to
+    # sparse.csr_matrix(N, dtype=np.float64) of the dense blocks).
+    check_sampler(sampler)
+    programme_chains = _swap_replicates_csr(Bp, [seed + 2 * b for b in range(n_replicates)], sampler, n_mult,
+                                            MAX_ATTEMPT_FACTOR, step)
     if randomise_background:
-        background_chains = swap_replicates(Bb[:, bg_cols], [seed + 2 * b + 1 for b in range(n_replicates)],
-                                            sampler=sampler, n_mult=n_mult, n_jobs=n_jobs)
+        background_chains = _swap_replicates_csr(Bb[:, bg_cols], [seed + 2 * b + 1 for b in range(n_replicates)],
+                                                 sampler, n_mult, MAX_ATTEMPT_FACTOR, step)
     for b in range(n_replicates):
         Np, dp = next(programme_chains)
         diags.append(("programme", dp))
@@ -1017,8 +1022,8 @@ def programme_null_replicates(B, reference: ProgrammeReference, *, n_replicates:
         if randomise_background:
             Nb, db = next(background_chains)
             diags.append(("background", db))
-            D = Nb.sum(axis=1).astype(np.float64)
-        O = sparse.csr_matrix(Np, dtype=np.float64) @ M
+            D = np.diff(Nb.indptr).astype(np.float64)    # row sums of the binary null block
+        O = Np @ M
         O = O.toarray() if sparse.issparse(O) else np.asarray(O)
         rs.append(programme_membership(_evidence_from_blocks(O, D, M, beta_p)))
     return rs, diags

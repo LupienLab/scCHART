@@ -417,17 +417,87 @@ def _bit(c):  # pragma: no cover - numba
 
 
 @njit(cache=True)
-def _pack_bits(entries, n_rows, n_cols):  # pragma: no cover - numba
-    """Bit-packed binary matrix with ones at the ``(row, col)`` rows of ``entries``.
+def _pack_bits(rows, cols, n_rows, n_cols):  # pragma: no cover - numba
+    """Bit-packed binary matrix with ones at ``(rows[e], cols[e])``.
 
     Row ``i`` is ``ceil(n_cols / 64)`` ``uint64`` words; column ``c`` is bit
-    ``c % 64`` of word ``c // 64``. Bits past ``n_cols`` stay zero.
+    ``c % 64`` of word ``c // 64``. Bits past ``n_cols`` stay zero. Repeated
+    entries set the same bit.
     """
     bits = np.zeros((n_rows, (n_cols + 63) >> 6), np.uint64)
+    for e in range(rows.size):
+        c = cols[e]
+        bits[rows[e], c >> 6] |= _bit(c)
+    return bits
+
+
+@njit(cache=True, inline="always")
+def _lowest_bit(w):  # pragma: no cover - numba
+    """Position of the lowest set bit of a non-zero ``uint64`` word."""
+    k = 0
+    if (w & np.uint64(0xFFFFFFFF)) == 0:
+        k += 32
+        w >>= np.uint64(32)
+    if (w & np.uint64(0xFFFF)) == 0:
+        k += 16
+        w >>= np.uint64(16)
+    if (w & np.uint64(0xFF)) == 0:
+        k += 8
+        w >>= np.uint64(8)
+    if (w & np.uint64(0xF)) == 0:
+        k += 4
+        w >>= np.uint64(4)
+    if (w & np.uint64(0x3)) == 0:
+        k += 2
+        w >>= np.uint64(2)
+    if (w & np.uint64(0x1)) == 0:
+        k += 1
+    return k
+
+
+@njit(cache=True)
+def _row_counts(bits):  # pragma: no cover - numba
+    """Number of ones in each row of a bit-packed matrix."""
+    out = np.zeros(bits.shape[0], np.int64)
+    for i in range(bits.shape[0]):
+        c = 0
+        for w in range(bits.shape[1]):
+            word = bits[i, w]
+            while word != 0:
+                word &= word - np.uint64(1)
+                c += 1
+        out[i] = c
+    return out
+
+
+@njit(cache=True)
+def _fill_columns(bits, indptr, indices):  # pragma: no cover - numba
+    """Write the column of every one of a bit-packed matrix, row by row, ascending.
+
+    ``indptr`` holds the row offsets (from :func:`_row_counts`); ``indices``
+    receives the columns. This is the CSR column array of the matrix,
+    in canonical order (``np.nonzero`` order of the dense matrix).
+    """
+    for i in range(bits.shape[0]):
+        k = indptr[i]
+        for w in range(bits.shape[1]):
+            word = bits[i, w]
+            base = w << 6
+            while word != 0:
+                indices[k] = base + _lowest_bit(word)
+                k += 1
+                word &= word - np.uint64(1)
+
+
+@njit(cache=True)
+def _count_kept(bits, entries):  # pragma: no cover - numba
+    """Number of the listed ``(row, col)`` entries that are ones in a bit-packed matrix."""
+    kept = 0
     for e in range(entries.shape[0]):
         c = entries[e, 1]
-        bits[entries[e, 0], c >> 6] |= _bit(c)
-    return bits
+        if (bits[entries[e, 0], c >> 6] & _bit(c)) != 0:
+            kept += 1
+    return kept
 
 
 @njit(cache=True)
@@ -684,17 +754,57 @@ def as_binary_dense(B) -> np.ndarray:
 
 
 
-def _entries(D0):
-    """Chain inputs for a dense binary block: ``(E, 2)`` entry array and bit-packed copy.
+def _csr_arrays(bits, n_cols):
+    """CSR ``(indptr, indices)`` of a bit-packed matrix, in canonical order.
 
-    The entries are listed in ``np.nonzero`` order (row-major), as in v0.1.0,
-    because the chain draws entries by position.
+    Index arrays are int32 when they fit, as SciPy chooses for a matrix of
+    this size, and int64 otherwise.
     """
-    rows, cols = np.nonzero(D0)
-    entries = np.empty((rows.size, 2), _index_dtype(*D0.shape))
-    entries[:, 0] = rows
-    entries[:, 1] = cols
-    return entries, _pack_bits(entries, D0.shape[0], D0.shape[1])
+    counts = _row_counts(bits)
+    nnz = int(counts.sum())
+    idx = _index_dtype(max(nnz, bits.shape[0]), n_cols)
+    indptr = np.zeros(bits.shape[0] + 1, idx)
+    np.cumsum(counts, out=indptr[1:])
+    indices = np.empty(nnz, idx)
+    _fill_columns(bits, indptr, indices)
+    return indptr, indices
+
+
+def _chain_input(B):
+    """Chain input for ``1[B > 0]``: shape, ``(E, 2)`` entry array, bit-packed matrix.
+
+    The matrix is the one :func:`as_binary_dense` returns (duplicates
+    summed, then ``> 0``); a sparse input is read from its stored entries,
+    without a dense block. The entries are listed in ``np.nonzero`` order
+    of that matrix (row-major, ascending columns), as in v0.1.0, because
+    the chain draws entries by position: they are read back from the
+    bit-packed matrix, so the order does not depend on how ``B`` stores
+    its entries.
+    """
+    if sparse.issparse(B):
+        B = sparse.csr_matrix(B)
+        if not B.has_canonical_format:
+            B = B.copy()
+            B.sum_duplicates()
+        n, F = B.shape
+        idx = _index_dtype(n, F)
+        rows = np.repeat(np.arange(n, dtype=idx), np.diff(B.indptr))
+        cols = B.indices.astype(idx, copy=False)
+        pos = B.data > 0
+        if not pos.all():
+            rows, cols = rows[pos], cols[pos]
+    else:
+        D = np.asarray(B) > 0
+        n, F = D.shape
+        idx = _index_dtype(n, F)
+        rows, cols = (a.astype(idx) for a in np.nonzero(D))
+    bits = _pack_bits(rows, cols, n, F)
+    del rows, cols
+    indptr, indices = _csr_arrays(bits, F)
+    entries = np.empty((indices.size, 2), _index_dtype(n, F))
+    entries[:, 0] = np.repeat(np.arange(n, dtype=entries.dtype), np.diff(indptr))
+    entries[:, 1] = indices
+    return (n, F), entries, bits
 
 def seed_key(seed) -> tuple:
     """Normalize an integer or a sequence of integers to a seed-key tuple.
@@ -736,21 +846,23 @@ def seeds_from_key(seed_key: int | Sequence[int], n: int) -> np.ndarray:
                     dtype=np.int64)
 
 
-def _diagnostics(D0, D, seed, nnz, target, acc, att, r0, c0, sampler) -> SwapDiagnostics:
-    """Assemble the :class:`SwapDiagnostics` of one finished chain.
+def _finish(bits, n_cols, entries0, r0, c0, seed, target, acc, att, sampler):
+    """Read one finished chain: CSR arrays of its matrix and its :class:`SwapDiagnostics`.
 
-    ``D0`` is the input block, ``D`` the randomized block, and ``r0`` and
-    ``c0`` the input row and column sums.
+    ``bits`` is the randomized bit-packed matrix, ``entries0`` the input's
+    entries and ``r0``, ``c0`` its row and column sums. The margins are
+    counted on the randomized matrix itself, not taken from the chain's
+    entry bookkeeping.
     """
-    exact = bool((D.sum(axis=1) == r0).all() and (D.sum(axis=0) == c0).all())
-    if nnz:
-        rr, cc = np.nonzero(D0)
-        retained = float(D[rr, cc].sum()) / nnz
-    else:
-        retained = 1.0
+    indptr, indices = _csr_arrays(bits, n_cols)
+    nnz = entries0.shape[0]
+    exact = bool(np.array_equal(np.diff(indptr), r0)
+                 and np.array_equal(np.bincount(indices, minlength=n_cols), c0))
+    retained = float(_count_kept(bits, entries0)) / nnz if nnz else 1.0
     done = (att == target) if sampler == SAMPLER_PROPOSAL_CLOCK else (acc == target)
-    return SwapDiagnostics(int(seed), int(nnz), int(target), int(acc), int(att),
+    diag = SwapDiagnostics(int(seed), int(nnz), int(target), int(acc), int(att),
                            bool(done), exact, retained, sampler)
+    return indptr, indices, diag
 
 
 def _budget(nnz: int, sampler: str, n_mult, max_attempt_factor) -> tuple[int, int, bool]:
@@ -815,19 +927,8 @@ def swap_randomise(B, seed: int, *, sampler: str = DEFAULT_SAMPLER, n_mult: Opti
     not guarantee that the chain has mixed.
     """
     check_sampler(sampler)
-    D0 = as_binary_dense(B)
-    entries, bits = _entries(D0)
-    nnz = entries.shape[0]
-    r0, c0 = D0.sum(axis=1), D0.sum(axis=0)
-    target, max_att, accepted_clock = _budget(nnz, sampler, n_mult, max_attempt_factor)
-    if nnz < 2:
-        D = D0.copy()
-        return D, _diagnostics(D0, D, seed, nnz, 0, 0, 0, r0, c0, sampler)
-    acc, att, _ = _swap_chain(entries, bits, target, max_att, int(seed), accepted_clock)
-    D = _unpack_bits(bits, D0.shape[1])
-    diag = _diagnostics(D0, D, seed, nnz, target, acc, att, r0, c0, sampler)
-    assert diag.margins_exact, "fixed-margin swap chain changed a margin"
-    return D, diag
+    (_, F), bits, _, _, diag = next(_null_states(B, [seed], sampler, n_mult, max_attempt_factor, 1))
+    return _unpack_bits(bits, F), diag
 
 
 def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
@@ -875,9 +976,8 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
     Each replicate equals the output of :func:`swap_randomise` for the
     same seed, whatever the value of ``n_jobs``. The chains keep the matrix
     bit-packed (``n_cells * n_features / 8`` bytes each) with 8 bytes per
-    occupied entry per chain (16 when an index exceeds ``2**31``), plus the
-    dense ``uint8`` input and each yielded block
-    (``n_cells * n_features`` bytes each).
+    occupied entry per chain (16 when an index exceeds ``2**31``); each
+    yielded dense block takes ``n_cells * n_features`` bytes.
     """
     check_sampler(sampler)
     step = check_n_jobs(n_jobs)
@@ -886,15 +986,43 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
 
 def _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step):
     """Generator behind :func:`swap_replicates` (arguments already validated)."""
-    D0 = as_binary_dense(B)
-    entries0, bits0 = _entries(D0)
+    for (_, F), bits, _, _, diag in _null_states(B, seeds, sampler, n_mult, max_attempt_factor, step):
+        yield _unpack_bits(bits, F), diag
+
+
+def _swap_replicates_csr(B, seeds, sampler, n_mult, max_attempt_factor, step):
+    """Like :func:`_swap_replicates`, but yield each replicate as a sparse matrix.
+
+    Each replicate is the float64 ``csr_matrix`` that
+    ``scipy.sparse.csr_matrix(D, dtype=np.float64)`` gives for the dense
+    replicate ``D`` (same index dtypes, canonical order, values 1.0),
+    built from the chain's bit-packed matrix without a dense block.
+    Arguments must already be validated.
+    """
+    for shape, _, indptr, indices, diag in _null_states(B, seeds, sampler, n_mult, max_attempt_factor, step):
+        yield sparse.csr_matrix((np.ones(indices.size), indices, indptr), shape=shape), diag
+
+
+def _null_states(B, seeds, sampler, n_mult, max_attempt_factor, step):
+    """Run one chain per seed and yield each result, in seed order.
+
+    Yields ``(shape, bits, indptr, indices, diagnostics)``: the randomized
+    matrix bit-packed and as CSR arrays. Chains run in batches of ``step``
+    (in parallel when ``step > 1``); every chain is seeded with its own
+    seed, so the results do not depend on ``step``. Raises
+    ``AssertionError`` if a chain changes a margin (not expected to occur).
+    """
+    shape, entries0, bits0 = _chain_input(B)
+    n, F = shape
     nnz = entries0.shape[0]
-    r0, c0 = D0.sum(axis=1), D0.sum(axis=0)
+    r0 = np.bincount(entries0[:, 0], minlength=n)
+    c0 = np.bincount(entries0[:, 1], minlength=F)
     target, max_att, accepted_clock = _budget(nnz, sampler, n_mult, max_attempt_factor)
     seeds = np.asarray(seeds, dtype=np.int64)
     if nnz < 2:
         for s in seeds:
-            yield D0.copy(), _diagnostics(D0, D0, s, nnz, 0, 0, 0, r0, c0, sampler)
+            indptr, indices, diag = _finish(bits0, F, entries0, r0, c0, s, 0, 0, 0, sampler)
+            yield shape, bits0.copy(), indptr, indices, diag
         return
     for start in range(0, seeds.size, step):
         batch = seeds[start:start + step]
@@ -907,10 +1035,9 @@ def _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step):
             out = [(bitsets[k], accs[k], atts[k]) for k in range(batch.size)]
             del bitsets
         for s, (bits, acc, att) in zip(batch, out):
-            D = _unpack_bits(bits, D0.shape[1])
-            diag = _diagnostics(D0, D, s, nnz, target, acc, att, r0, c0, sampler)
+            indptr, indices, diag = _finish(bits, F, entries0, r0, c0, s, target, acc, att, sampler)
             assert diag.margins_exact, "fixed-margin swap chain changed a margin"
-            yield D, diag
+            yield shape, bits, indptr, indices, diag
 
 
 # ---------------------------------------------------------------------------

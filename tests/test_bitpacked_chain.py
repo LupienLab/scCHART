@@ -1,9 +1,11 @@
-"""Strict tests of the bit-packed fixed-margin chain.
+"""Strict tests of the bit-packed fixed-margin chain and its sparse output.
 
 The v0.1.0 chain (dense ``uint8`` state, int64 entry arrays) is kept here as the
 reference. The bit-packed chain must give byte-identical matrices and identical
 diagnostics for every seed, sampler, budget and block shape, including feature
-counts around the 64-bit word size.
+counts around the 64-bit word size. The sparse replicates used by the null
+calibrations must be exactly ``scipy.sparse.csr_matrix(D, dtype=np.float64)`` of the
+v0.1.0 dense replicate ``D``.
 """
 
 import numpy as np
@@ -113,7 +115,8 @@ def test_pack_unpack_roundtrip_and_padding():
     rng = np.random.default_rng(0)
     for F in (1, 63, 64, 65, 200):
         D = (rng.random((9, F)) < 0.4).astype(np.uint8)
-        entries, bits = S._entries(D)
+        shape, entries, bits = S._chain_input(D)
+        assert shape == D.shape
         rr, cc = np.nonzero(D)
         assert entries.dtype == np.int32 and entries.shape == (rr.size, 2) and entries.flags.c_contiguous
         assert np.array_equal(entries[:, 0], rr) and np.array_equal(entries[:, 1], cc)   # np.nonzero order
@@ -125,7 +128,7 @@ def test_pack_unpack_roundtrip_and_padding():
 
 def test_int64_indices_give_the_same_chain():
     M = _block(30, 130, 0.2, 7)
-    entries, bits = S._entries((M > 0).astype(np.uint8))
+    _, entries, bits = S._chain_input(M)
     target = 50 * entries.shape[0]
     b32, b64 = bits.copy(), bits.copy()
     e32, e64 = entries.copy(), entries.astype(np.int64)
@@ -139,7 +142,7 @@ def test_int64_indices_give_the_same_chain():
 
 def test_parallel_chains_match_serial_and_leave_inputs_unchanged():
     M = _block(25, 140, 0.25, 8)
-    entries, bits = S._entries((M > 0).astype(np.uint8))
+    _, entries, bits = S._chain_input(M)
     e_copy, b_copy = entries.copy(), bits.copy()
     seeds = np.array([3, 4, 5, 6], np.int64)
     target = 40 * entries.shape[0]
@@ -161,3 +164,96 @@ def test_budgets_shorter_than_the_lookahead_match_v010(sampler):
         for maf in (1, 2, 100):
             D, d = swap_randomise(M, 21, sampler=sampler, n_mult=n_mult, max_attempt_factor=maf)
             _check(D, d, *_swap_randomise_v010(M, 21, sampler, n_mult=n_mult, max_attempt_factor=maf))
+
+
+# ----------------------------------------------------------------------------- sparse output
+def _same_csr_object(A, B):
+    assert type(A) is type(B) is sparse.csr_matrix
+    assert A.shape == B.shape and A.dtype == B.dtype
+    for x, y in ((A.indptr, B.indptr), (A.indices, B.indices), (A.data, B.data)):
+        assert x.dtype == y.dtype and x.tobytes() == y.tobytes()
+    assert A.has_sorted_indices and A.has_canonical_format
+
+
+@pytest.mark.parametrize("F", [1, 63, 64, 65, 129, 300])
+@pytest.mark.parametrize("sampler", SAMPLERS)
+@pytest.mark.parametrize("n_jobs", [1, 3])
+def test_sparse_replicates_are_the_csr_of_the_v010_dense_replicates(F, sampler, n_jobs):
+    M = _block(19, F, 0.3, 100 + F)
+    seeds = [4, 5, 6, 7]
+    got = list(S._swap_replicates_csr(sparse.csr_matrix(M), seeds, sampler, None, S.MAX_ATTEMPT_FACTOR, n_jobs))
+    for (C, d), s in zip(got, seeds):
+        D_ref, d_ref = _swap_randomise_v010(M, s, sampler)
+        _same_csr_object(C, sparse.csr_matrix(D_ref, dtype=np.float64))
+        for k, v in d_ref.items():
+            assert getattr(d, k) == v, k
+
+
+def test_sparse_replicates_of_degenerate_blocks():
+    for M in (np.zeros((3, 70)), np.eye(1, 70), np.eye(1, 9) + np.eye(1, 9, 3), np.zeros((0, 5))):
+        for C, d in S._swap_replicates_csr(M, [1, 2], "proposal_clock", None, S.MAX_ATTEMPT_FACTOR, 2):
+            _same_csr_object(C, sparse.csr_matrix(np.asarray(M > 0, np.uint8), dtype=np.float64))
+            assert d.margins_exact and d.retained == 1.0 and d.accepted == 0
+            if M.shape[0]:
+                _, d_ref = _swap_randomise_v010(M, d.seed)
+                for k, v in d_ref.items():
+                    assert getattr(d, k) == v, k
+
+
+def test_chain_input_matches_the_dense_binary_block_for_odd_inputs():
+    coo = sparse.coo_matrix((np.array([1.0, -1.0, 2.0, 1.0, 3.0, 1.0, 1.0, 2.0, np.nan, 0.0]),
+                             (np.array([0, 0, 1, 1, 2, 3, 3, 4, 4, 4]), np.array([1, 1, 2, 70, 0, 65, 64, 3, 9, 8]))),
+                            shape=(5, 71))
+    unsorted = sparse.csr_matrix((np.array([1.0, 1.0, 2.0, 0.0, 1.0, 1.0]), np.array([66, 2, 0, 5, 65, 1]),
+                                  np.array([0, 3, 6])), shape=(2, 80))
+    rng = np.random.default_rng(1)
+    X = rng.integers(-1, 3, (30, 130)) * (rng.random((30, 130)) < 0.3)
+    for M in (coo, unsorted, sparse.csc_matrix(X.astype(np.float32)), X, X.astype(np.float64),
+              sparse.csr_matrix(X.astype(np.int64)), np.array([[0, np.nan, 2.0, -1.0]])):
+        D = S.as_binary_dense(M)
+        shape, entries, bits = S._chain_input(M)
+        rr, cc = np.nonzero(D)
+        assert shape == D.shape
+        assert np.array_equal(entries[:, 0], rr) and np.array_equal(entries[:, 1], cc)
+        assert S._unpack_bits(bits, D.shape[1]).tobytes() == D.tobytes()
+    assert unsorted.indices.tolist() == [66, 2, 0, 5, 65, 1]          # input not modified
+
+
+def test_csr_arrays_match_scipy():
+    rng = np.random.default_rng(2)
+    for n, F, rate in ((7, 1, 0.5), (9, 64, 0.0), (11, 65, 0.9), (13, 200, 0.05), (1, 130, 1.0)):
+        D = (rng.random((n, F)) < rate).astype(np.uint8)
+        _, _, bits = S._chain_input(D)
+        indptr, indices = S._csr_arrays(bits, F)
+        ref = sparse.csr_matrix(D, dtype=np.float64)
+        C = sparse.csr_matrix((np.ones(indices.size), indices, indptr), shape=D.shape)
+        _same_csr_object(C, ref)
+
+
+def test_margin_check_reads_the_randomized_matrix():
+    # the margin diagnostic is computed from the matrix itself, so a corrupted state is detected
+    M = _block(10, 70, 0.3, 3)
+    shape, entries, bits = S._chain_input(M)
+    r0 = np.bincount(entries[:, 0], minlength=shape[0])
+    c0 = np.bincount(entries[:, 1], minlength=shape[1])
+    *_, ok = S._finish(bits, shape[1], entries, r0, c0, 1, 0, 0, 0, "proposal_clock")
+    assert ok.margins_exact and ok.retained == 1.0
+    bad = bits.copy()
+    bad[2, 0] ^= np.uint64(1)                      # flip one cell x feature
+    *_, d = S._finish(bad, shape[1], entries, r0, c0, 1, 0, 0, 0, "proposal_clock")
+    assert not d.margins_exact
+
+
+@pytest.mark.parametrize("sampler", SAMPLERS)
+def test_structural_null_matches_the_dense_v010_loop(sampler):
+    from scchart.structural_divergence import LSIProjection, structural_J, structural_null_calibration
+
+    rng = np.random.default_rng(4)
+    X = sparse.csr_matrix(rng.binomial(2, 0.08, (60, 260)).astype(np.float64))
+    X = X[np.asarray(X.sum(1)).ravel() > 0]
+    proj = LSIProjection.fit(X, n_components=6, random_state=0)
+    seeds = [11, 12, 13]
+    cal = structural_null_calibration(X, proj, n_replicates=3, sampler=sampler, seeds=seeds, n_jobs=2)
+    ref = [structural_J(proj(sparse.csr_matrix(_swap_randomise_v010(X, s, sampler)[0], dtype=np.float64)))["J"]
+           for s in seeds]
+    assert cal.J_null.tobytes() == np.asarray(ref).tobytes()

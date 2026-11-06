@@ -110,8 +110,10 @@ from scipy import sparse
 from scipy.sparse.linalg import svds
 
 from ._scoring import (
+    MAX_ATTEMPT_FACTOR,
     N_NULL_REPLICATES,
     check_n_jobs,
+    check_sampler,
     DEFAULT_SAMPLER,
     DepthStandardizedResult,
     binarize,
@@ -125,7 +127,7 @@ from ._scoring import (
     pairwise_replicate_agreement,
     seed_key as _seed_key,
     seeds_from_key,
-    swap_replicates,
+    _swap_replicates_csr,
 )
 
 
@@ -822,7 +824,7 @@ def structural_null_calibration(B, project: Projector, *, n_replicates: int = N_
         If a cell has no open feature, or ``Z_obs`` differs from
         ``project(B)``.
     """
-    check_n_jobs(n_jobs)
+    step = check_n_jobs(n_jobs)
     Bb = binarize(B)
     n_open = np.asarray(Bb.sum(axis=1)).ravel()
     if np.any(n_open <= 0):
@@ -834,8 +836,11 @@ def structural_null_calibration(B, project: Projector, *, n_replicates: int = N_
     obs = structural_J(Z, adapter=adapter)
     seeds = seeds_from_key(seed_key, n_replicates) if seeds is None else np.asarray(seeds, np.int64)
     jn, diags = [], []
-    for D, dg in swap_replicates(Bb, seeds, sampler=sampler, n_mult=n_mult, n_jobs=n_jobs):
-        jn.append(structural_J(project(sparse.csr_matrix(D, dtype=np.float64)), adapter=adapter)["J"])
+    check_sampler(sampler)
+    # Each null replicate is the float64 CSR of the randomized block, built from the chain's
+    # bit-packed matrix (identical to sparse.csr_matrix(D, dtype=np.float64) of the dense block).
+    for Bn, dg in _swap_replicates_csr(Bb, seeds, sampler, n_mult, MAX_ATTEMPT_FACTOR, step):
+        jn.append(structural_J(project(Bn), adapter=adapter)["J"])
         diags.append(dg)
     jn = np.asarray(jn)
     mu = float(jn.mean())
