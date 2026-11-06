@@ -803,8 +803,9 @@ def structural_null_calibration(B, project: Projector, *, n_replicates: int = N_
         Explicit chain seeds, one per replicate.
     n_jobs : int, optional
         Chains run in parallel batches of this size (memory about
-        ``n_jobs`` dense copies of ``B``): a positive integer, or -1 for all
-        numba threads. Results do not depend on it. Default 1.
+        ``n_jobs`` bit-packed copies of ``B``, ``n_cells * n_features / 8``
+        bytes each): a positive integer, or -1 for all numba threads.
+        Results do not depend on it. Default 1.
     adapter : {"signed_channel", "spectral_energy"}, optional
         Simplex adapter, used for both observed and null cells.
     Z_obs : numpy.ndarray, optional
