@@ -406,6 +406,10 @@ def _index_dtype(n_rows: int, n_cols: int):
     return np.int32 if max(int(n_rows), int(n_cols)) < 2 ** 31 else np.int64
 
 
+#: Proposals drawn ahead by the chain (a power of two; see :func:`_chain`).
+_LOOKAHEAD = 16
+
+
 @njit(cache=True, inline="always")
 def _bit(c):  # pragma: no cover - numba
     """Mask of column ``c`` within its 64-bit word."""
@@ -413,16 +417,16 @@ def _bit(c):  # pragma: no cover - numba
 
 
 @njit(cache=True)
-def _pack_bits(rows, cols, n_rows, n_cols):  # pragma: no cover - numba
-    """Bit-packed binary matrix with ones at ``(rows[e], cols[e])``.
+def _pack_bits(entries, n_rows, n_cols):  # pragma: no cover - numba
+    """Bit-packed binary matrix with ones at the ``(row, col)`` rows of ``entries``.
 
     Row ``i`` is ``ceil(n_cols / 64)`` ``uint64`` words; column ``c`` is bit
     ``c % 64`` of word ``c // 64``. Bits past ``n_cols`` stay zero.
     """
     bits = np.zeros((n_rows, (n_cols + 63) >> 6), np.uint64)
-    for e in range(rows.size):
-        c = cols[e]
-        bits[rows[e], c >> 6] |= _bit(c)
+    for e in range(entries.shape[0]):
+        c = entries[e, 1]
+        bits[entries[e, 0], c >> 6] |= _bit(c)
     return bits
 
 
@@ -444,24 +448,22 @@ def _unpack_bits(bits, n_cols):  # pragma: no cover - numba
 
 
 @njit(cache=True)
-def _chain(rows, cols, bits, target, max_attempts, accepted_clock):  # pragma: no cover - numba
+def _chain(entries, bits, target, max_attempts, accepted_clock):  # pragma: no cover - numba
     """Run one fixed-margin swap chain on a bit-packed matrix in place.
 
     Each proposal draws two occupied entries e1 = (i, a) and e2 = (j, b)
     uniformly with replacement (E**2 ordered pairs). If i != j, a != b and
     entries (i, b) and (j, a) are both 0, the 2 x 2 swap is applied;
-    otherwise the state is unchanged (a self-loop). ``cols`` is updated so
-    that ``(rows[e], cols[e])`` always lists the occupied entries.
+    otherwise the state is unchanged (a self-loop). ``entries`` is updated
+    so that it always lists the occupied entries.
 
     Parameters
     ----------
-    rows : numpy.ndarray
-        Row index of each occupied entry (int32 or int64). A swap keeps
-        every entry in its row, so ``rows`` is only read; it can be shared
-        by concurrent chains.
-    cols : numpy.ndarray
-        Column index of each occupied entry (same dtype as ``rows``;
-        modified in place).
+    entries : numpy.ndarray
+        ``(E, 2)`` array of the ``(row, col)`` of each occupied entry (int32,
+        or int64 for indices of ``2**31`` or more; modified in place). Row and
+        column are stored side by side so that one memory access fetches
+        both.
     bits : numpy.ndarray
         Bit-packed binary matrix (see :func:`_pack_bits`; modified in place).
     target : int
@@ -481,26 +483,55 @@ def _chain(rows, cols, bits, target, max_attempts, accepted_clock):  # pragma: n
         Number of accepted swaps.
     attempts : int
         Number of proposals made.
+    touched : int
+        Checksum of the entries read ahead (see Notes). It has no meaning;
+        it is returned only so that the compiler keeps those reads.
 
     Notes
     -----
     The numba random state must already be seeded. The draws, tests and
     updates are those of the v0.1.0 dense-matrix chain, so the result is
     the same matrix for the same seed.
+
+    The chain is limited by memory latency: the entries drawn are random
+    positions in arrays far larger than the caches. The two draws of
+    proposal ``t + _LOOKAHEAD`` are therefore made at proposal ``t`` and
+    their entries read early, so that they are cached when that proposal
+    is evaluated. Proposals are still evaluated one at a time, in order,
+    with their own draws. The accepted-swap clock can stop with up to
+    ``_LOOKAHEAD`` drawn proposals unused; they are discarded (every chain
+    seeds the random state afresh, so this is not observable).
     """
-    E = cols.size
+    E = entries.shape[0]
+    mask = _LOOKAHEAD - 1
+    ahead1 = np.empty(_LOOKAHEAD, np.int64)
+    ahead2 = np.empty(_LOOKAHEAD, np.int64)
+    drawn = 0
+    while drawn < _LOOKAHEAD and drawn < max_attempts:
+        ahead1[drawn] = np.random.randint(E)
+        ahead2[drawn] = np.random.randint(E)
+        drawn += 1
+    touched = np.uint64(0)
     acc = 0
     att = 0
     while att < max_attempts:
         if accepted_clock and acc >= target:
             break
-        e1 = np.random.randint(E)
-        e2 = np.random.randint(E)
+        slot = att & mask
+        e1 = ahead1[slot]
+        e2 = ahead2[slot]
+        if drawn < max_attempts:          # draw proposal att + _LOOKAHEAD, read its entries early
+            f1 = np.random.randint(E)
+            f2 = np.random.randint(E)
+            ahead1[slot] = f1
+            ahead2[slot] = f2
+            drawn += 1
+            touched += np.uint64(entries[f1, 0] + entries[f1, 1] + entries[f2, 0] + entries[f2, 1])
         att += 1
-        i = rows[e1]
-        a = cols[e1]
-        j = rows[e2]
-        b = cols[e2]
+        i = entries[e1, 0]
+        a = entries[e1, 1]
+        j = entries[e2, 0]
+        b = entries[e2, 1]
         if i == j or a == b:
             continue
         wa = a >> 6
@@ -513,30 +544,30 @@ def _chain(rows, cols, bits, target, max_attempts, accepted_clock):  # pragma: n
         bits[j, wb] ^= mb
         bits[i, wb] |= mb
         bits[j, wa] |= ma
-        cols[e1] = b
-        cols[e2] = a
+        entries[e1, 1] = b
+        entries[e2, 1] = a
         acc += 1
-    return acc, att
+    return acc, att, touched
 
 
 @njit(cache=True)
-def _swap_chain(rows, cols, bits, target, max_attempts, seed, accepted_clock):  # pragma: no cover - numba
+def _swap_chain(entries, bits, target, max_attempts, seed, accepted_clock):  # pragma: no cover - numba
     """Seed the numba random state and run :func:`_chain` once.
 
     Arguments and return values are as in :func:`_chain`, with the
     additional integer ``seed``.
     """
     np.random.seed(seed)
-    return _chain(rows, cols, bits, target, max_attempts, accepted_clock)
+    return _chain(entries, bits, target, max_attempts, accepted_clock)
 
 
 @njit(parallel=True, cache=True)
-def _run_chains(bits0, rows, cols0, target, max_attempts, seeds, accepted_clock):  # pragma: no cover - numba
+def _run_chains(bits0, entries0, target, max_attempts, seeds, accepted_clock):  # pragma: no cover - numba
     """Run one independent chain per seed in parallel.
 
-    Each chain starts from a copy of ``bits0`` and ``cols0`` (``rows`` is
-    shared and only read) and is seeded with its own entry of ``seeds``,
-    so its result matches the serial chain for the same seed.
+    Each chain starts from a copy of ``bits0`` and ``entries0`` and is
+    seeded with its own entry of ``seeds``, so its result matches the
+    serial chain for the same seed.
 
     Returns
     -------
@@ -546,20 +577,24 @@ def _run_chains(bits0, rows, cols0, target, max_attempts, seeds, accepted_clock)
         Accepted swaps per chain.
     att : numpy.ndarray
         Proposals per chain.
+    touched : numpy.ndarray
+        Read-ahead checksums (see :func:`_chain`); meaningless.
     """
     Bn = seeds.size
     out = np.empty((Bn, bits0.shape[0], bits0.shape[1]), np.uint64)
     acc = np.zeros(Bn, np.int64)
     att = np.zeros(Bn, np.int64)
+    touched = np.zeros(Bn, np.uint64)
     for b in prange(Bn):
         bits = out[b]
         bits[:, :] = bits0
-        cols = cols0.copy()
+        entries = entries0.copy()
         np.random.seed(seeds[b])
-        a_, t_ = _chain(rows, cols, bits, target, max_attempts, accepted_clock)
+        a_, t_, k_ = _chain(entries, bits, target, max_attempts, accepted_clock)
         acc[b] = a_
         att[b] = t_
-    return out, acc, att
+        touched[b] = k_
+    return out, acc, att, touched
 
 
 @dataclass(frozen=True)
@@ -650,16 +685,16 @@ def as_binary_dense(B) -> np.ndarray:
 
 
 def _entries(D0):
-    """Chain inputs for a dense binary block: entry rows, entry columns, bit-packed copy.
+    """Chain inputs for a dense binary block: ``(E, 2)`` entry array and bit-packed copy.
 
     The entries are listed in ``np.nonzero`` order (row-major), as in v0.1.0,
     because the chain draws entries by position.
     """
     rows, cols = np.nonzero(D0)
-    idx = _index_dtype(*D0.shape)
-    rows = rows.astype(idx)
-    cols = cols.astype(idx)
-    return rows, cols, _pack_bits(rows, cols, D0.shape[0], D0.shape[1])
+    entries = np.empty((rows.size, 2), _index_dtype(*D0.shape))
+    entries[:, 0] = rows
+    entries[:, 1] = cols
+    return entries, _pack_bits(entries, D0.shape[0], D0.shape[1])
 
 def seed_key(seed) -> tuple:
     """Normalize an integer or a sequence of integers to a seed-key tuple.
@@ -781,14 +816,14 @@ def swap_randomise(B, seed: int, *, sampler: str = DEFAULT_SAMPLER, n_mult: Opti
     """
     check_sampler(sampler)
     D0 = as_binary_dense(B)
-    rows, cols, bits = _entries(D0)
-    nnz = rows.size
+    entries, bits = _entries(D0)
+    nnz = entries.shape[0]
     r0, c0 = D0.sum(axis=1), D0.sum(axis=0)
     target, max_att, accepted_clock = _budget(nnz, sampler, n_mult, max_attempt_factor)
     if nnz < 2:
         D = D0.copy()
         return D, _diagnostics(D0, D, seed, nnz, 0, 0, 0, r0, c0, sampler)
-    acc, att = _swap_chain(rows, cols, bits, target, max_att, int(seed), accepted_clock)
+    acc, att, _ = _swap_chain(entries, bits, target, max_att, int(seed), accepted_clock)
     D = _unpack_bits(bits, D0.shape[1])
     diag = _diagnostics(D0, D, seed, nnz, target, acc, att, r0, c0, sampler)
     assert diag.margins_exact, "fixed-margin swap chain changed a margin"
@@ -839,8 +874,8 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
     -----
     Each replicate equals the output of :func:`swap_randomise` for the
     same seed, whatever the value of ``n_jobs``. The chains keep the matrix
-    bit-packed (``n_cells * n_features / 8`` bytes each) with 4 bytes per
-    occupied entry per chain (8 when an index exceeds ``2**31``), plus the
+    bit-packed (``n_cells * n_features / 8`` bytes each) with 8 bytes per
+    occupied entry per chain (16 when an index exceeds ``2**31``), plus the
     dense ``uint8`` input and each yielded block
     (``n_cells * n_features`` bytes each).
     """
@@ -852,8 +887,8 @@ def swap_replicates(B, seeds: Sequence[int], *, sampler: str = DEFAULT_SAMPLER,
 def _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step):
     """Generator behind :func:`swap_replicates` (arguments already validated)."""
     D0 = as_binary_dense(B)
-    rows0, cols0, bits0 = _entries(D0)
-    nnz = rows0.size
+    entries0, bits0 = _entries(D0)
+    nnz = entries0.shape[0]
     r0, c0 = D0.sum(axis=1), D0.sum(axis=0)
     target, max_att, accepted_clock = _budget(nnz, sampler, n_mult, max_attempt_factor)
     seeds = np.asarray(seeds, dtype=np.int64)
@@ -865,10 +900,10 @@ def _swap_replicates(B, seeds, sampler, n_mult, max_attempt_factor, step):
         batch = seeds[start:start + step]
         if batch.size == 1:
             bits = bits0.copy()
-            acc, att = _swap_chain(rows0, cols0.copy(), bits, target, max_att, int(batch[0]), accepted_clock)
+            acc, att, _ = _swap_chain(entries0.copy(), bits, target, max_att, int(batch[0]), accepted_clock)
             out = [(bits, acc, att)]
         else:
-            bitsets, accs, atts = _run_chains(bits0, rows0, cols0, target, max_att, batch, accepted_clock)
+            bitsets, accs, atts, _ = _run_chains(bits0, entries0, target, max_att, batch, accepted_clock)
             out = [(bitsets[k], accs[k], atts[k]) for k in range(batch.size)]
             del bitsets
         for s, (bits, acc, att) in zip(batch, out):

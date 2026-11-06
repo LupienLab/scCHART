@@ -10,7 +10,7 @@ Performance and memory improvements. All scores, null distributions, seeds and m
 ### Performance
 
 - The programme null runs its chains in parallel: `n_jobs` is added to `programme_null_replicates`, `programme_null_calibration`, `crossfit_population_calibration` and `depth_standardized_programme_comparison`, and `Heterogeneity(n_jobs=...)` now applies to both nulls. Each chain keeps its own seed, so results do not depend on `n_jobs`.
-- The fixed-margin chain keeps its matrix bit-packed (1 bit per cell x feature instead of 1 byte) with 32-bit entry indices, and parallel chains share one copy of the entry rows, which a swap never changes. Same draws, tests and updates as 0.1.0.
+- The fixed-margin chain keeps its matrix bit-packed (1 bit per cell x feature instead of 1 byte), stores each entry's row and column side by side as 32-bit integers, and draws its proposals a few steps ahead so that their entries are already cached when they are evaluated. Same draws, in the same order, and the same tests and updates as 0.1.0.
 - The dense null block is built directly from the sparse input, without a float copy of the whole cells x features matrix (about 10 bytes per cell x feature before, 1 byte now).
 - `binarize` makes one copy instead of two, and the programme axis no longer re-binarizes matrices that are already binary.
 - The programme axis computes background depth, background rates and group detection rates without copying the background columns or converting the reference matrix to CSC.

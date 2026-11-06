@@ -113,8 +113,10 @@ def test_pack_unpack_roundtrip_and_padding():
     rng = np.random.default_rng(0)
     for F in (1, 63, 64, 65, 200):
         D = (rng.random((9, F)) < 0.4).astype(np.uint8)
-        rows, cols, bits = S._entries(D)
-        assert rows.dtype == np.int32 and cols.dtype == np.int32
+        entries, bits = S._entries(D)
+        rr, cc = np.nonzero(D)
+        assert entries.dtype == np.int32 and entries.shape == (rr.size, 2) and entries.flags.c_contiguous
+        assert np.array_equal(entries[:, 0], rr) and np.array_equal(entries[:, 1], cc)   # np.nonzero order
         assert bits.dtype == np.uint64 and bits.shape == (9, (F + 63) // 64)
         assert S._unpack_bits(bits, F).tobytes() == D.tobytes()
         if F % 64:                                     # bits past the last column stay zero
@@ -123,28 +125,39 @@ def test_pack_unpack_roundtrip_and_padding():
 
 def test_int64_indices_give_the_same_chain():
     M = _block(30, 130, 0.2, 7)
-    rows, cols, bits = S._entries((M > 0).astype(np.uint8))
-    target = 50 * rows.size
+    entries, bits = S._entries((M > 0).astype(np.uint8))
+    target = 50 * entries.shape[0]
     b32, b64 = bits.copy(), bits.copy()
-    c32, c64 = cols.copy(), cols.astype(np.int64)
-    r32 = rows.copy()
-    out32 = S._swap_chain(r32, c32, b32, target, target, 77, False)
-    out64 = S._swap_chain(rows.astype(np.int64), c64, b64, target, target, 77, False)
-    assert out32 == out64
-    assert b32.tobytes() == b64.tobytes() and np.array_equal(c32, c64)
-    assert np.array_equal(r32, rows)                   # rows are never written
+    e32, e64 = entries.copy(), entries.astype(np.int64)
+    out32 = S._swap_chain(e32, b32, target, target, 77, False)
+    out64 = S._swap_chain(e64, b64, target, target, 77, False)
+    assert out32[:2] == out64[:2]
+    assert b32.tobytes() == b64.tobytes() and np.array_equal(e32, e64)
+    assert np.array_equal(e32[:, 0], entries[:, 0])    # a swap never moves an entry to another row
     assert S._index_dtype(10, 2 ** 31) is np.int64 and S._index_dtype(2 ** 31 - 1, 5) is np.int32
 
 
-def test_parallel_chains_share_rows_and_leave_inputs_unchanged():
+def test_parallel_chains_match_serial_and_leave_inputs_unchanged():
     M = _block(25, 140, 0.25, 8)
-    rows, cols, bits = S._entries((M > 0).astype(np.uint8))
-    r_copy, c_copy, b_copy = rows.copy(), cols.copy(), bits.copy()
+    entries, bits = S._entries((M > 0).astype(np.uint8))
+    e_copy, b_copy = entries.copy(), bits.copy()
     seeds = np.array([3, 4, 5, 6], np.int64)
-    target = 40 * rows.size
-    par, acc, att = S._run_chains(bits, rows, cols, target, target, seeds, False)
-    assert np.array_equal(rows, r_copy) and np.array_equal(cols, c_copy) and np.array_equal(bits, b_copy)
+    target = 40 * entries.shape[0]
+    par, acc, att, _ = S._run_chains(bits, entries, target, target, seeds, False)
+    assert np.array_equal(entries, e_copy) and np.array_equal(bits, b_copy)
     for k, s in enumerate(seeds):
         b = bits.copy()
-        a_, t_ = S._swap_chain(rows, cols.copy(), b, target, target, int(s), False)
+        a_, t_, _ = S._swap_chain(entries.copy(), b, target, target, int(s), False)
         assert (acc[k], att[k]) == (a_, t_) and par[k].tobytes() == b.tobytes()
+
+
+@pytest.mark.parametrize("sampler", SAMPLERS)
+def test_budgets_shorter_than_the_lookahead_match_v010(sampler):
+    # budgets of 0 to a few proposals, below and around the read-ahead depth
+    M = _block(12, 70, 0.1, 11)
+    nnz = int((M > 0).sum())
+    for target in (0, 1, 2, S._LOOKAHEAD - 1, S._LOOKAHEAD, S._LOOKAHEAD + 1, 3 * S._LOOKAHEAD):
+        n_mult = target / nnz + 1e-9
+        for maf in (1, 2, 100):
+            D, d = swap_randomise(M, 21, sampler=sampler, n_mult=n_mult, max_attempt_factor=maf)
+            _check(D, d, *_swap_randomise_v010(M, 21, sampler, n_mult=n_mult, max_attempt_factor=maf))
