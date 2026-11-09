@@ -29,6 +29,23 @@ Optional environment variables:
 
 The notebook writes results to `data/pbmc5k_scchart_results.h5ad`. Figures are displayed in the notebook and are not saved separately.
 
+## Run time and memory
+
+**Controlled benchmark, 0.1.0 vs 0.2.0.**
+
+- **Setup:** the computation of this notebook (without plotting), run on the same machine (Apple M3 Ultra) with the same data, seeds and null budgets, at `n_jobs=24`. Each figure is the mean of 3 runs per version.
+- **Programme matched-depth comparison:** it ran serially in both versions, because 0.1.0 has no `n_jobs` for it.
+
+| | 0.1.0 | 0.2.0 | change |
+|---|---|---|---|
+| Structural null calibration | 664 s | 400 s | 1.66x faster |
+| Whole scCHART computation | 775 s | 472 s | 1.64x faster |
+| Peak memory (RSS) | 10.64 GB | 4.06 GB | 62% lower |
+
+The results of 0.2.0 are byte-identical to those of 0.1.0.
+
+**Stored notebook run.** The times printed in the notebook come from a single run of 0.2.0 on the same machine during normal use, with `SCCHART_N_JOBS=24`. `model.fit` took 4.9 min and the programme matched-depth comparison 8 s; the comparison now runs its null chains in parallel. Single-run times depend on the machine and its load, so they are not a benchmark. Results do not depend on `SCCHART_N_JOBS`.
+
 ## Data source and preparation
 
 `prepare_data.py` obtains the annotated PBMC 5k dataset distributed with the SnapATAC2 tutorials:
