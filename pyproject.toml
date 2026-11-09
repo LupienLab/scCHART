@@ -1,6 +1,6 @@
 [project]
 name = "scchart"
-version = "0.1.0"
+version = "0.2.0"
 description = "scCHART (single-cell Chromatin Heterogeneity Assessment and Ranking Tool) is an information-theoretic framework for quantifying structural and regulatory programme heterogeneity from single-cell chromatin accessibility data."
 readme = "README.md"
 license = "MIT"
