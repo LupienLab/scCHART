@@ -92,7 +92,6 @@ from ._scoring import (
     _as_binary,
     DEFAULT_SAMPLER,
     DepthStandardizedResult,
-    binarize,
     binomial_downsample,
     check_labels,
     count_depth,

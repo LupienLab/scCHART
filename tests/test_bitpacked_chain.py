@@ -246,7 +246,11 @@ def test_margin_check_reads_the_randomized_matrix():
 
 @pytest.mark.parametrize("sampler", SAMPLERS)
 def test_structural_null_matches_the_dense_v010_loop(sampler):
-    from scchart.structural_divergence import LSIProjection, structural_J, structural_null_calibration
+    from scchart.structural_divergence import (
+        LSIProjection,
+        structural_J,
+        structural_null_calibration,
+    )
 
     rng = np.random.default_rng(4)
     X = sparse.csr_matrix(rng.binomial(2, 0.08, (60, 260)).astype(np.float64))
